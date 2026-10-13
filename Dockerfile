@@ -16,6 +16,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY packages ./packages
 COPY services ./services
 COPY db ./db
+COPY deploy ./deploy
 COPY fixtures ./fixtures
 COPY tests ./tests
 COPY alembic.ini ./
@@ -25,4 +26,4 @@ RUN useradd --create-home app && mkdir -p /app/var/storage && chown -R app:app /
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

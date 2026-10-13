@@ -291,6 +291,18 @@ tests/                 Unit, integration, security workflows and evaluation harn
 docs/                  Architecture, source policy and API notes
 ```
 
+## Railway live demo
+
+The repository includes production-ready Docker entry points for a Railway
+demo containing a pgvector database, the API/background worker, persistent
+upload storage, and the React frontend. The demo uses the deterministic
+offline providers, so no OpenAI key is required.
+
+Follow the exact service settings, variables, migration command, health check,
+volume mount, and smoke-test checklist in
+[the Railway deployment guide](deploy/railway/README.md). Keep the evaluator's
+administrator credentials private rather than publishing them in this README.
+
 ## Known limitations
 
 - The bundled corpus is fictional and intentionally small. Official sources are registered disabled until an administrator completes source/licence review.

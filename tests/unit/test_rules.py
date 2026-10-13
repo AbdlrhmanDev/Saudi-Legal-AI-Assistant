@@ -171,3 +171,9 @@ def test_production_refuses_weak_secrets():
     with pytest.raises(RuntimeError):
         Settings(environment="production", jwt_secret="x" * 40, cors_origins="*").assert_safe_for_environment()
     Settings(environment="production", jwt_secret="x" * 40, cors_origins="https://app.example").assert_safe_for_environment()
+
+
+@pytest.mark.parametrize("scheme", ["postgresql://", "postgres://"])
+def test_provider_database_urls_use_psycopg_v3(scheme):
+    settings = Settings(database_url=f"{scheme}user:pass@db.internal:5432/app")
+    assert settings.database_url == "postgresql+psycopg://user:pass@db.internal:5432/app"

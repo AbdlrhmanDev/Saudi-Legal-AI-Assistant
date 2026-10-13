@@ -32,12 +32,12 @@ The screenshots below show the implemented Arabic RTL application and its real r
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/assets/screenshots/chat-multiple-questions.png" alt="Arabic legal chat with multiple questions and evidence-based abstention" width="100%"><br>
-      <sub><b>Arabic chat:</b> multiple questions, date context and explicit evidence-based abstention.</sub>
+      <img src="docs/assets/screenshots/chat-insufficient-evidence.png" alt="Arabic legal chat refusing to invent an answer when the indexed evidence is insufficient" width="100%"><br>
+      <sub><b>Safe abstention:</b> the assistant clearly refuses to state a legal rule when the indexed evidence is insufficient.</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/assets/screenshots/chat-abstention.png" alt="RAG chat answers with status and trace metadata" width="100%"><br>
-      <sub><b>Answer contract:</b> status, as-of date, scope warning and request trace.</sub>
+      <img src="docs/assets/screenshots/chat-grounded-answer.png" alt="Arabic RAG answer grounded in Labor Law article five with a visible citation" width="100%"><br>
+      <sub><b>Grounded answer:</b> an in-corpus question returns the applicable rule, effective-date context and a citation to article 5.</sub>
     </td>
   </tr>
 </table>

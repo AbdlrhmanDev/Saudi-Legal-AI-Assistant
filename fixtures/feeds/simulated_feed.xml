@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEST DATA. A simulated official-gazette feed used to demonstrate the update workflow.
+     Nothing here is a real publication. -->
+<rss version="2.0">
+  <channel>
+    <title>نشرة تجريبية للقرارات والأنظمة (بيانات اختبار)</title>
+    <link>https://fixture.invalid/feed</link>
+    <description>Simulated feed for the update-lifecycle demo</description>
+    <item>
+      <title>تعديل المادة الخامسة من نظام العمل التجريبي</title>
+      <link>https://fixture.invalid/decisions/1001?utm_source=rss</link>
+      <guid isPermaLink="false">fixture-decision-1001</guid>
+      <pubDate>Mon, 05 Oct 2026 09:00:00 +0300</pubDate>
+      <description>قرار تجريبي بتعديل مدة فترة التجربة لتصبح مئة وثمانين يوماً، ويعمل به اعتباراً من 2026-11-01. (بيانات اختبار)</description>
+      <enclosure url="corpus/labor_v2_amendment.txt" type="text/plain" length="0"/>
+    </item>
+    <item>
+      <title>قرار تجريبي بتشكيل لجنة لمراجعة النماذج الإدارية</title>
+      <link>https://fixture.invalid/decisions/1002</link>
+      <guid isPermaLink="false">fixture-decision-1002</guid>
+      <pubDate>Tue, 06 Oct 2026 09:00:00 +0300</pubDate>
+      <description>قرار إداري لا يتضمن نصاً نظامياً. (بيانات اختبار)</description>
+    </item>
+    <item>
+      <title>تهنئة بمناسبة اليوم الوطني</title>
+      <link>https://fixture.invalid/news/1003</link>
+      <guid isPermaLink="false">fixture-news-1003</guid>
+      <pubDate>Wed, 07 Oct 2026 09:00:00 +0300</pubDate>
+      <description>خبر عام. (بيانات اختبار)</description>
+    </item>
+  </channel>
+</rss>

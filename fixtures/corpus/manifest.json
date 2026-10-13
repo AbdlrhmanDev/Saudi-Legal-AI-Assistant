@@ -1,0 +1,90 @@
+{
+  "_comment": "FICTIONAL TEST DATA. None of these documents is a real Saudi legal instrument. They exist so the pipeline, tests and update demo are reproducible. The real pilot corpus must be added through the admin upload flow and listed in a signed-off manifest (see docs/source_policy.md).",
+  "extraction_date": "2026-10-12",
+  "documents": [
+    {
+      "file": "labor_v1.txt",
+      "title_ar": "نظام العمل التجريبي (بيانات اختبار غير رسمية)",
+      "domain": "labor",
+      "instrument_type": "law",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/labor_v1",
+      "version_label": "v1 (fixture)",
+      "published_at": "2024-01-01",
+      "effective_from": "2024-01-01",
+      "review_status": "approved (fixture)",
+      "sha256": "0626202173c94c232b1b3a5222088eebb9705e6fe76055af1895138d97b02c97",
+      "seed": true
+    },
+    {
+      "file": "labor_v2_amendment.txt",
+      "title_ar": "نظام العمل التجريبي (بيانات اختبار غير رسمية)",
+      "domain": "labor",
+      "instrument_type": "law",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/labor_v2_amendment",
+      "version_label": "v2 (fixture amendment)",
+      "published_at": "2026-10-05",
+      "effective_from": "2026-11-01",
+      "review_status": "delivered by the simulated feed; approved during the demo",
+      "sha256": "ccde47c6401cd3d49c0c610d7d01bb98bf3ca14450317600241b0e4922633b3a",
+      "seed": false
+    },
+    {
+      "file": "companies_v1.txt",
+      "title_ar": "نظام الشركات التجريبي (بيانات اختبار غير رسمية)",
+      "domain": "commercial",
+      "instrument_type": "law",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/companies_v1",
+      "version_label": "v1 (fixture)",
+      "published_at": "2024-01-01",
+      "effective_from": "2024-01-01",
+      "review_status": "approved (fixture)",
+      "sha256": "b7b16cb7959aa13026286e25d6cad13ac836d820f65ba7138bf5e94f12f99add",
+      "seed": true
+    },
+    {
+      "file": "pdpl_v1.txt",
+      "title_ar": "نظام حماية البيانات الشخصية التجريبي (بيانات اختبار غير رسمية)",
+      "domain": "data_protection",
+      "instrument_type": "law",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/pdpl_v1",
+      "version_label": "v1 (fixture)",
+      "published_at": "2024-03-01",
+      "effective_from": "2024-03-01",
+      "review_status": "approved (fixture)",
+      "sha256": "ff503cd6d48a65fb363890a770b9535ba7600f6fc16b8a5352eec6385655fb3c",
+      "seed": true
+    },
+    {
+      "file": "pdpl_regulation_v1.txt",
+      "title_ar": "اللائحة التنفيذية التجريبية لحماية البيانات الشخصية (بيانات اختبار غير رسمية)",
+      "domain": "data_protection",
+      "instrument_type": "implementing_regulation",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/pdpl_regulation_v1",
+      "version_label": "v1 (fixture)",
+      "published_at": "2024-06-01",
+      "effective_from": "2024-06-01",
+      "review_status": "approved (fixture)",
+      "sha256": "03252673ea4cabd1cc0e1b03977fba86efb11389b6417264a127e89906dcd62e",
+      "seed": true
+    },
+    {
+      "file": "hostile_notice.txt",
+      "title_ar": "تعميم تجريبي بشأن الدوام في شهر رمضان (بيانات اختبار - محتوى عدائي)",
+      "domain": "labor",
+      "instrument_type": "notice",
+      "issuing_authority": "جهة تجريبية (بيانات اختبار)",
+      "source_url": "https://fixture.invalid/corpus/hostile_notice",
+      "version_label": "v1 (adversarial fixture)",
+      "published_at": "2025-01-01",
+      "effective_from": "2025-01-01",
+      "review_status": "approved (fixture)",
+      "sha256": "65e2641216af0cb4c46eb3eaf2ea4caec2a94336ea7be4bdcc20485f3598d950",
+      "seed": true
+    }
+  ]
+}

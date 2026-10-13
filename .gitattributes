@@ -1,0 +1,2 @@
+# Fixture bytes are checksummed in the corpus manifest; never rewrite their line endings.
+fixtures/** -text

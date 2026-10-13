@@ -1,0 +1,10 @@
+.env
+.venv
+.git
+var
+**/__pycache__
+.pytest_cache
+.ruff_cache
+*.pdf
+# measured on the fictional corpus; not shown in a real deployment
+tests/evaluation/results

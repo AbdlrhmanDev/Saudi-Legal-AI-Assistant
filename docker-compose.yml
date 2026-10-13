@@ -1,0 +1,74 @@
+# Single-command local stack:  docker compose up --build
+# API: http://localhost:8000  (OpenAPI docs at /docs)
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://legal:${POSTGRES_PASSWORD:-legal}@db:5432/legal_ai
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.test}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env (12+ characters)}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hash}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  LLM_PROVIDER: ${LLM_PROVIDER:-extractive}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ALLOW_FIXTURE_SOURCES: ${ALLOW_FIXTURE_SOURCES:-false}
+  TRACE_STORE_QUERY_TEXT: ${TRACE_STORE_QUERY_TEXT:-false}
+  STORAGE_DIR: /app/var/storage
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg17
+    environment:
+      POSTGRES_USER: legal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-legal}
+      POSTGRES_DB: legal_ai
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legal -d legal_ai"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    environment: *app-env
+    command: >
+      sh -c "alembic upgrade head && python -m legal_core.cli bootstrap"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment: *app-env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - storage:/app/var/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build: .
+    environment: *app-env
+    command: ["python", "-m", "worker.main"]
+    volumes:
+      - storage:/app/var/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  storage:

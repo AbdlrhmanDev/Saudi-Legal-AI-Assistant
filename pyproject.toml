@@ -1,0 +1,63 @@
+[project]
+name = "saudi-legal-ai"
+version = "0.1.0"
+description = "Source-grounded Saudi legal RAG backend with reviewed regulatory updates (MVP / technical assessment)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0.30",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "alembic>=1.13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyjwt>=2.8",
+    "bcrypt>=4.1",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    "certifi",
+    "feedparser>=6.0",
+    "pymupdf>=1.24",
+    "beautifulsoup4>=4.12",
+    "apscheduler>=3.10,<4",
+    "openai>=1.40",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["packages/legal_core", "services/api", "services/worker"]
+
+[tool.setuptools.package-data]
+legal_core = ["certs/*.pem"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages/legal_core", "services/api", "services/worker", "."]
+markers = [
+    "integration: needs a PostgreSQL + pgvector database (TEST_DATABASE_URL)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["packages/legal_core", "services/api", "services/worker", "."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["legal_core", "api", "worker", "tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File", "fastapi.Form"]

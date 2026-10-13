@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Saudi Legal AI Assistant architecture</title>
+  <desc id="desc">Reviewed official documents flow through ingestion and approval into a versioned PostgreSQL and pgvector corpus. The Arabic web app queries a FastAPI retrieval service which returns date-aware cited answers or abstains.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8f6f1"/><stop offset="1" stop-color="#e9f1ec"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#173c30" flood-opacity="0.10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1f5f4a"/></marker>
+  </defs>
+  <rect width="1200" height="630" rx="28" fill="url(#bg)"/>
+  <circle cx="1090" cy="70" r="150" fill="#1f5f4a" opacity="0.05"/><circle cx="85" cy="585" r="130" fill="#b08a2e" opacity="0.06"/>
+  <text x="600" y="58" text-anchor="middle" fill="#17231f" font-family="Arial, sans-serif" font-size="28" font-weight="700">Saudi Legal AI Assistant</text>
+  <text x="600" y="88" text-anchor="middle" fill="#5e655f" font-family="Arial, sans-serif" font-size="16">Reviewed, version-aware and source-grounded legal RAG</text>
+  <g filter="url(#shadow)" font-family="Arial, sans-serif">
+    <rect x="52" y="148" width="210" height="104" rx="18" fill="#fff"/><text x="157" y="188" text-anchor="middle" fill="#1f5f4a" font-size="18" font-weight="700">Official sources</text><text x="157" y="217" text-anchor="middle" fill="#5e655f" font-size="14">PDF · HTML · feeds</text>
+    <rect x="342" y="132" width="240" height="136" rx="18" fill="#fff"/><text x="462" y="174" text-anchor="middle" fill="#1f5f4a" font-size="18" font-weight="700">Ingestion &amp; review</text><text x="462" y="204" text-anchor="middle" fill="#5e655f" font-size="14">Parse · diff · warnings</text><rect x="390" y="222" width="144" height="28" rx="14" fill="#fbf0d9"/><text x="462" y="241" text-anchor="middle" fill="#7a4f00" font-size="12" font-weight="700">Human approval required</text>
+    <rect x="662" y="132" width="254" height="136" rx="18" fill="#1f5f4a"/><text x="789" y="172" text-anchor="middle" fill="#fff" font-size="18" font-weight="700">Versioned legal corpus</text><text x="789" y="202" text-anchor="middle" fill="#dce9e2" font-size="14">PostgreSQL + pgvector</text><text x="789" y="230" text-anchor="middle" fill="#dce9e2" font-size="13">Immutable text · effective dates</text>
+    <rect x="982" y="148" width="166" height="104" rx="18" fill="#fff"/><text x="1065" y="188" text-anchor="middle" fill="#1f5f4a" font-size="18" font-weight="700">Audit trail</text><text x="1065" y="217" text-anchor="middle" fill="#5e655f" font-size="14">Review · rollback</text>
+    <rect x="103" y="382" width="210" height="112" rx="18" fill="#fff"/><text x="208" y="424" text-anchor="middle" fill="#1f5f4a" font-size="18" font-weight="700">Arabic web app</text><text x="208" y="454" text-anchor="middle" fill="#5e655f" font-size="14">React · saved chat history</text>
+    <rect x="410" y="354" width="294" height="168" rx="20" fill="#fff"/><text x="557" y="396" text-anchor="middle" fill="#1f5f4a" font-size="19" font-weight="700">FastAPI grounded answer pipeline</text><text x="557" y="430" text-anchor="middle" fill="#5e655f" font-size="14">Temporal filters → hybrid retrieval → RRF</text><text x="557" y="458" text-anchor="middle" fill="#5e655f" font-size="14">Evidence gate → validated citations</text><rect x="475" y="478" width="164" height="28" rx="14" fill="#e2efe7"/><text x="557" y="497" text-anchor="middle" fill="#17543d" font-size="12" font-weight="700">Answer or safe abstention</text>
+    <rect x="802" y="382" width="276" height="112" rx="18" fill="#fff"/><text x="940" y="424" text-anchor="middle" fill="#1f5f4a" font-size="18" font-weight="700">Worker &amp; monitoring</text><text x="940" y="454" text-anchor="middle" fill="#5e655f" font-size="14">Jobs · source checks · heartbeat</text>
+  </g>
+  <g fill="none" stroke="#1f5f4a" stroke-width="3" marker-end="url(#arrow)"><path d="M262 200 H332"/><path d="M582 200 H652"/><path d="M916 200 H972"/><path d="M313 438 H400"/><path d="M557 354 V287 H745 V278"/><path d="M802 438 H714"/><path d="M940 382 V296 H835 V278"/></g>
+  <g font-family="Arial, sans-serif" font-size="13" fill="#5e655f"><text x="297" y="188" text-anchor="middle">allowlist</text><text x="617" y="188" text-anchor="middle">approve</text><text x="945" y="188" text-anchor="middle">events</text><text x="356" y="426" text-anchor="middle">HTTPS</text></g>
+  <text x="600" y="585" text-anchor="middle" fill="#3f4541" font-family="Arial, sans-serif" font-size="15">Every answer is filtered by the requested date and linked to an approved legal version.</text>
+</svg>

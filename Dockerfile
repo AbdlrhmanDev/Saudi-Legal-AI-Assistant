@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.19 /uv /usr/local/bin/uv
+
+ENV PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+# Dependencies first (pinned by uv.lock) so code changes do not rebuild this layer.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY packages ./packages
+COPY services ./services
+COPY db ./db
+COPY fixtures ./fixtures
+COPY tests ./tests
+COPY alembic.ini ./
+RUN uv sync --frozen --no-dev
+
+RUN useradd --create-home app && mkdir -p /app/var/storage && chown -R app:app /app/var
+USER app
+
+EXPOSE 8000
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -45,10 +45,10 @@ The screenshots below show the implemented Arabic RTL application and its real r
 ### Citations and source inspection
 
 <p align="center">
-  <img src="docs/assets/screenshots/citation-source-panel.png" alt="Citation panel showing source status, publication date, effective date and legal text" width="72%">
+  <img src="docs/assets/screenshots/citation-source-panel-clean.png" alt="Clean citation panel showing source status, publication date, effective date and compact legal text" width="72%">
 </p>
 
-<p align="center"><sub><b>Citation panel:</b> controlling text, review status, publication date, effective date, version history and official-source action.</sub></p>
+<p align="center"><sub><b>Citation panel:</b> clean controlling text without copied page navigation or artificial spacing, alongside review status, publication date and effective date.</sub></p>
 
 ### Corpus dashboard and immutable versions
 

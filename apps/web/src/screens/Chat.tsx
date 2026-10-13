@@ -26,7 +26,9 @@ const cleanDisplayedLegalText = (text: string) =>
     .filter((line) => line && !PAGE_CHROME.has(line) && !line.startsWith('جميع الحقوق محفوظة') && !line.startsWith('تاريخ آخر تعديل:') && !/^-+°C$/.test(line))
     .join('\n')
 const compactMessage = (text: string) => cleanDisplayedLegalText(text).replace(/\s+/g, ' ').trim()
-const compactSource = (text: string) => cleanDisplayedLegalText(text).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
+// Citations are rendered as a compact paragraph. Source-page line wrapping must
+// never become artificial gaps in the legal text displayed to the user.
+const compactSource = (text: string) => cleanDisplayedLegalText(text).replace(/\s+/g, ' ').trim()
 
 export function Chat({ chat }: { chat: ChatController }) {
   const { messages, domain, setDomain, asOf, setAsOf, input, setInput, source, setSource, send, clear, busy } = chat

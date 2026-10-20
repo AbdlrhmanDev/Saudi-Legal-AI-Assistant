@@ -1,0 +1,30 @@
+# Job-queue worker: exactly one replica. Choose ONE scheduling mode:
+#   A) in-process schedule (default): leave SYNC_SCHEDULER unset; the worker triggers 00:00 Asia/Riyadh
+#      and catches up missed days every 5 minutes.
+#   B) Kubernetes CronJob (nightly-sync-cronjob.yaml): set SYNC_SCHEDULER=false here.
+# Either way the advisory lock + unique per-day run key guarantee one logical run per day.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legal-worker
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: legal-worker}
+  template:
+    metadata:
+      labels: {app: legal-worker}
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/saudi-legal-ai:latest
+          command: ["python", "-m", "worker.main"]
+          envFrom:
+            - configMapRef: {name: legal-ai}
+            - secretRef: {name: legal-ai}
+          env:
+            - {name: SYNC_SCHEDULER, value: "true"}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}

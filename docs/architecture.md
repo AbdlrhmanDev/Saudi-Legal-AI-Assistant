@@ -5,17 +5,21 @@ Browser (Arabic chat / admin)                [apps/web — built separately]
             │  HTTPS, JSON
       FastAPI REST API  (services/api)
         │            │
-   Chat RAG      Admin + update review ──► ingestion_jobs (queue in PostgreSQL)
-        │            │                              │
- Hybrid retriever    │                     Worker (services/worker)
-        │            │                     jobs · APScheduler · heartbeat
+   Chat RAG      Operator API (runs, quarantine, ──► ingestion_jobs (queue in PostgreSQL)
+        │         generations, rollback)                    │
+ Hybrid retriever    │                     Worker (services/worker) × 1
+        │            │                     00:00 Asia/Riyadh sync · catch-up · jobs · heartbeat
         └────────────┴──────────┬───────────────────┘
                      PostgreSQL + pgvector
         instruments → versions → articles → chunks (tsvector + vector)
-        source_registry · update_candidates · review_events · query_traces
+        sync_runs · source_snapshots · index_generations · quarantine_events
+        amendment_relations · update_candidates · review_events · query_traces
                                 │
-                 approved, allowlisted official sources
+                 enabled, allowlisted official sources
 ```
+
+The nightly pipeline, release gate, scheduling contract and PRD traceability are documented in
+[autonomous_sync.md](autonomous_sync.md); capacity and deployment topology in [scaling.md](scaling.md).
 
 All domain logic lives in `packages/legal_core`; the API and the worker are thin shells over it.
 
@@ -34,12 +38,14 @@ All domain logic lives in `packages/legal_core`; the API and the worker are thin
 
 ## Status model
 
-Stored (ingestion review): `needs_review → approved | rejected`, `approved → rolled_back`.
+Stored (version): `needs_review → approved | quarantined | rejected`, `approved → rolled_back`, and
+`evidence` for an official notice (e.g. a repeal decision) kept as proof but never retrievable.
 Derived from the as-of date (never stored): `scheduled → active → superseded | repealed`
 (`legal_core/temporal.py`). This is why “approved” is not the same as “in force”.
 
-Candidates: `candidate → retrieved → needs_review → approved | rejected`, with `failed` as a retryable side path
-(attach the document by manual upload).
+Candidates: `candidate → retrieved → needs_review →` (release gate) `→ approved | quarantined | excluded`.
+`failed` (fetch error) and transient quarantine reasons are retried by later runs; an operator can still
+approve or reject a quarantined candidate (escape hatch, PRD v2 8.2).
 
 ## Ingestion
 
@@ -73,20 +79,24 @@ prose come from cited passages), retries once with the validator's reason, then 
 marked `partial`. Citation objects are built from database rows, never from model output. Temporal caveats and
 the `forthcoming` list are added server-side.
 
-## Update lifecycle (PRD 8.1)
+## Update lifecycle (PRD v2 section 8)
 
 | Step | Where |
 |---|---|
-| Detect / de-duplicate | `monitor.sync_source` — allowlist check, retries with backoff, canonical URL + item id + content hash |
-| Acquire | only when the source's `crawl_policy` allows it (`fetch_allowed`, `fixture`); otherwise manual upload |
-| Extract & align | `ingestion.ingest_document` + `diffing.diff_against_base` |
-| Verify | `review.approve_candidate` / `reject_candidate` — evidence text mandatory, warnings acknowledged |
-| Version & index | approval closes the predecessor's interval and builds chunks/embeddings in the same transaction |
-| Observe | job history, source `last_error`, traces, audit trail; `tests/evaluation` as the regression run |
+| Discover / de-duplicate | `monitor.sync_source` — allowlist check, retries with backoff, canonical URL + item id + content hash |
+| Fetch & snapshot | `monitor.acquire` (only when `crawl_policy` allows it) → immutable `source_snapshots` row |
+| Parse & align | `ingestion.ingest_document` + `diffing.diff_against_base` |
+| Classify & validate | `agent` proposal → deterministic `release.evaluate`; quarantine with a reason code otherwise |
+| Version, index, activate | `sync._publish` — interval changes, incremental embeddings and a health-checked generation switch in one transaction |
+| Observe | `sync_runs.stage_counts`, `review_events` (actor = null for automatic decisions), alerts, freshness report |
+
+Manual review (`review.approve_candidate`) remains as an escape hatch and goes through the same
+`place_version` + `activate_generation` path.
 
 ## Operations
 
 - Jobs: `SELECT … FOR UPDATE SKIP LOCKED`; each job in its own transaction; permanent errors fail, transient ones retry.
-- `/health/ready` = database + pgvector extension + a worker heartbeat younger than `WORKER_STALE_SECONDS`.
+- `/readyz` = database + pgvector (worker reported, not gating); `/healthz` = process up.
+- `/health/ready` (legacy) additionally requires a worker heartbeat younger than `WORKER_STALE_SECONDS`.
 - Structured JSON logs with request id; paths only (no query strings, bodies, question text or tokens).
 - Traces store a hash of the question, retrieved/cited ids, scores, timings and models; purged after `TRACE_RETENTION_DAYS`.

@@ -1,7 +1,12 @@
-"""Review-before-publish (FR-14..FR-18). Nothing becomes authoritative outside this module.
+"""Operator escape hatch (PRD v2 8.2) and the shared publication primitives.
 
-Every decision appends a ReviewEvent. Version text is immutable; only validity
-metadata (effective interval, index activation) changes, and each change is audited.
+Routine updates are published by the nightly release gate (legal_core.sync) with no human step.
+These functions let an operator correct, approve or reject a quarantined candidate, roll a version
+back, or roll the whole index back to an earlier generation.
+
+Every decision appends a ReviewEvent. Version text is immutable; only validity metadata (effective
+interval, index activation) changes, each change is audited, and each change becomes a new
+validated index generation.
 """
 
 import uuid
@@ -12,16 +17,27 @@ from sqlalchemy.orm import Session
 
 from legal_core.config import Settings
 from legal_core.embeddings import Embedder
-from legal_core.indexing import reindex_version
+from legal_core.generations import (
+    IndexHealthError,
+    activate_generation,
+    active_generation,
+    apply_manifest,
+    previous_generation,
+)
+from legal_core.indexing import index_version
 from legal_core.models import (
     CLASSIFICATIONS,
     DocumentVersion,
+    IndexGeneration,
     LegalInstrument,
+    QuarantineEvent,
     ReviewEvent,
     UpdateCandidate,
+    utcnow,
 )
 
-OPEN_STATES = ("candidate", "retrieved", "parsed", "needs_review", "failed")
+OPEN_STATES = ("candidate", "retrieved", "parsed", "needs_review", "failed", "quarantined")
+APPROVABLE_STATES = ("needs_review", "quarantined")
 # Warnings a reviewer must explicitly acknowledge before content can become authoritative.
 BLOCKING_WARNINGS = ("possible_prompt_injection", "possible_partial_amendment_document", "no_articles_detected")
 
@@ -39,7 +55,7 @@ def _candidate(session: Session, candidate_id: uuid.UUID) -> UpdateCandidate:
     return candidate
 
 
-def _authoritative_versions(session: Session, instrument_id: uuid.UUID, exclude: uuid.UUID) -> list[DocumentVersion]:
+def authoritative_versions(session: Session, instrument_id: uuid.UUID, exclude: uuid.UUID) -> list[DocumentVersion]:
     return list(
         session.scalars(
             select(DocumentVersion)
@@ -55,23 +71,53 @@ def _authoritative_versions(session: Session, instrument_id: uuid.UUID, exclude:
     )
 
 
-def _set_target(session: Session, candidate: UpdateCandidate, target_instrument_id: uuid.UUID) -> None:
-    instrument = session.get(LegalInstrument, target_instrument_id)
-    if instrument is None:
-        raise ReviewError("INVALID_TARGET", "target instrument does not exist", 422)
-    candidate.target_instrument_id = instrument.id
-    version = candidate.proposed_version
-    if version and version.instrument_id != instrument.id:
-        clash = session.scalars(
-            select(DocumentVersion).where(
-                DocumentVersion.instrument_id == instrument.id, DocumentVersion.raw_hash == version.raw_hash
-            )
-        ).first()
-        if clash:
-            raise ReviewError("DUPLICATE_VERSION", "the target instrument already has this exact document")
-        version.instrument_id = instrument.id
-        session.flush()
-        session.refresh(version, ["instrument"])
+def place_version(session: Session, version: DocumentVersion, effective: date) -> dict:
+    """Make `version` authoritative from `effective`: the version in force at that date ends there
+    (superseded) and the new one ends where a later scheduled version begins. Returns the before /
+    after pointers for the audit trail. Raises ReviewError on a same-day conflict."""
+    others = authoritative_versions(session, version.instrument_id, exclude=version.id)
+    if any(o.effective_from == effective for o in others):
+        raise ReviewError(
+            "CONFLICTING_VERSION",
+            "another approved version of this instrument starts on the same effective date; roll it back or adjudicate",
+        )
+    predecessor = next(
+        (o for o in reversed(others) if o.effective_from < effective and (o.effective_to is None or o.effective_to > effective)),
+        None,
+    )
+    successor = next((o for o in others if o.effective_from > effective), None)
+    pointers: dict = {}
+    if predecessor:
+        pointers["predecessor"] = {
+            "version_id": str(predecessor.id),
+            "previous_effective_to": predecessor.effective_to.isoformat() if predecessor.effective_to else None,
+            "previous_end_reason": predecessor.end_reason,
+        }
+        predecessor.effective_to, predecessor.end_reason = effective, "superseded"
+    version.effective_from = effective
+    version.effective_to = successor.effective_from if successor else None
+    version.end_reason = "superseded" if successor else None
+    version.metadata_gaps = [
+        g for g in version.metadata_gaps if g != "effective_from" and not (g == "published_at" and version.published_at)
+    ]
+    version.review_status, version.index_active = "approved", True
+    version.instrument.current_review_status = "approved"
+    session.flush()
+    return pointers
+
+
+def resolve_quarantine(session: Session, candidate_id: uuid.UUID, actor_id: uuid.UUID | None, state: str = "resolved") -> None:
+    for event in session.scalars(
+        select(QuarantineEvent).where(QuarantineEvent.candidate_id == candidate_id, QuarantineEvent.resolution_state == "open")
+    ):
+        event.resolution_state, event.resolved_at, event.resolved_by = state, utcnow(), actor_id
+
+
+def _activate(session: Session, *, trigger: str, changed: list[DocumentVersion], **kwargs) -> IndexGeneration:
+    try:
+        return activate_generation(session, trigger=trigger, changed=changed, **kwargs)
+    except IndexHealthError as exc:
+        raise ReviewError("INDEX_HEALTH_FAILED", str(exc)) from None
 
 
 def update_candidate(
@@ -117,6 +163,25 @@ def update_candidate(
     return candidate
 
 
+def _set_target(session: Session, candidate: UpdateCandidate, target_instrument_id: uuid.UUID) -> None:
+    instrument = session.get(LegalInstrument, target_instrument_id)
+    if instrument is None:
+        raise ReviewError("INVALID_TARGET", "target instrument does not exist", 422)
+    candidate.target_instrument_id = instrument.id
+    version = candidate.proposed_version
+    if version and version.instrument_id != instrument.id and candidate.classification != "repeal":
+        clash = session.scalars(
+            select(DocumentVersion).where(
+                DocumentVersion.instrument_id == instrument.id, DocumentVersion.raw_hash == version.raw_hash
+            )
+        ).first()
+        if clash:
+            raise ReviewError("DUPLICATE_VERSION", "the target instrument already has this exact document")
+        version.instrument_id = instrument.id
+        session.flush()
+        session.refresh(version, ["instrument"])
+
+
 def approve_candidate(
     session: Session,
     candidate_id: uuid.UUID,
@@ -131,14 +196,16 @@ def approve_candidate(
     acknowledge_warnings: bool = False,
 ) -> ReviewEvent:
     candidate = _candidate(session, candidate_id)
-    if candidate.state != "needs_review":
-        raise ReviewError("INVALID_STATE", f"only candidates in needs_review can be approved (state: {candidate.state})")
+    if candidate.state not in APPROVABLE_STATES:
+        raise ReviewError(
+            "INVALID_STATE", f"only candidates in needs_review or quarantined can be approved (state: {candidate.state})"
+        )
     if candidate.classification == "irrelevant":
         raise ReviewError("INVALID_STATE", "candidate is classified as irrelevant; reclassify it before approving")
     version = candidate.proposed_version
     if version is None:
         raise ReviewError("NO_DOCUMENT", "no official text is attached; upload the document for this candidate first")
-    if version.review_status != "needs_review":
+    if version.review_status not in APPROVABLE_STATES:
         raise ReviewError("INVALID_STATE", f"proposed version is {version.review_status}")
     if not effective_date_evidence.strip():
         raise ReviewError("EVIDENCE_REQUIRED", "effective_date_evidence is required", 422)
@@ -158,49 +225,27 @@ def approve_candidate(
         raise ReviewError(
             "EFFECTIVE_DATE_REQUIRED", "effective_from must be confirmed by the reviewer before approval", 422
         )
+    if published_at:
+        version.published_at = published_at
 
-    others = _authoritative_versions(session, version.instrument_id, exclude=version.id)
-    if any(o.effective_from == effective for o in others):
-        raise ReviewError(
-            "CONFLICTING_VERSION",
-            "another approved version of this instrument starts on the same effective date; roll it back or adjudicate",
-        )
-    predecessor = next(
-        (o for o in reversed(others) if o.effective_from < effective and (o.effective_to is None or o.effective_to > effective)),
-        None,
-    )
-    successor = next((o for o in others if o.effective_from > effective), None)
     details: dict = {
         "classification": candidate.classification,
         "diff_summary": (candidate.diff or {}).get("summary"),
         "acknowledged_warnings": warnings,
+        **place_version(session, version, effective),
     }
-    if predecessor:
-        details["predecessor"] = {
-            "version_id": str(predecessor.id),
-            "previous_effective_to": predecessor.effective_to.isoformat() if predecessor.effective_to else None,
-            "previous_end_reason": predecessor.end_reason,
-        }
-        predecessor.effective_to, predecessor.end_reason = effective, "superseded"
-
-    version.effective_from = effective
-    version.effective_to = successor.effective_from if successor else None
-    version.end_reason = "superseded" if successor else None
-    if published_at:
-        version.published_at = published_at
-    version.metadata_gaps = [
-        g for g in version.metadata_gaps if g != "effective_from" and not (g == "published_at" and version.published_at)
-    ]
-    version.review_status, version.index_active = "approved", True
-    session.flush()
+    version.validation_evidence = {"method": "reviewer", "effective_date_evidence": effective_date_evidence.strip()}
 
     # FR-18: build the search index for the approved version inside the same transaction, so a
     # failure (e.g. embedding provider down) publishes nothing.
-    details["indexed_chunks"] = reindex_version(session, version, embedder, settings)
+    stats = index_version(session, version, embedder, settings)
+    details["indexed_chunks"] = stats.chunks
     details["embedding_model"] = embedder.model_name
+    generation = _activate(session, trigger="manual_approval", changed=[version], stats=stats)
+    details["index_generation"] = generation.number
 
-    version.instrument.current_review_status = "approved"
     candidate.state = "approved"
+    resolve_quarantine(session, candidate.id, actor_id)
     event = ReviewEvent(
         candidate_id=candidate.id,
         version_id=version.id,
@@ -225,8 +270,9 @@ def reject_candidate(
         raise ReviewError("REASON_REQUIRED", "a rejection reason is required", 422)
     candidate.state = "rejected"
     version = candidate.proposed_version
-    if version and version.review_status == "needs_review":
+    if version and version.review_status in APPROVABLE_STATES:
         version.review_status = "rejected"
+    resolve_quarantine(session, candidate.id, actor_id)
     event = ReviewEvent(
         candidate_id=candidate.id,
         version_id=candidate.proposed_version_id,
@@ -255,7 +301,7 @@ def rollback_version(
         raise ReviewError("REASON_REQUIRED", "a rollback reason is required", 422)
 
     restored = []
-    for other in _authoritative_versions(session, version.instrument_id, exclude=version.id):
+    for other in authoritative_versions(session, version.instrument_id, exclude=version.id):
         if other.end_reason == "superseded" and other.effective_to == version.effective_from:
             restored.append({"version_id": str(other.id), "previous_effective_to": other.effective_to.isoformat()})
             other.effective_to = version.effective_to
@@ -263,16 +309,60 @@ def rollback_version(
 
     version.review_status, version.index_active = "rolled_back", False
     session.flush()
-    remaining = _authoritative_versions(session, version.instrument_id, exclude=version.id)
+    remaining = authoritative_versions(session, version.instrument_id, exclude=version.id)
     if not remaining:
         version.instrument.current_review_status = "needs_review"
+    generation = _activate(session, trigger="version_rollback", changed=[], note=reason.strip())
     event = ReviewEvent(
         version_id=version.id,
         actor_id=actor_id,
         decision="rolled_back",
         reason=reason.strip(),
-        details={"restored_predecessors": restored},
+        details={"restored_predecessors": restored, "index_generation": generation.number},
     )
     session.add(event)
     session.flush()
     return event
+
+
+def rollback_generation(
+    session: Session, *, actor_id: uuid.UUID | None, reason: str, target_generation_id: uuid.UUID | None = None
+) -> IndexGeneration:
+    """Restore an earlier validated generation (default: the one before the active generation).
+    The rollback itself becomes a new generation, so it can be undone the same way."""
+    if not reason.strip():
+        raise ReviewError("REASON_REQUIRED", "a rollback reason is required", 422)
+    current = active_generation(session)
+    if current is None:
+        raise ReviewError("NO_ACTIVE_GENERATION", "there is no active index generation to roll back")
+    if target_generation_id is None:
+        target = previous_generation(session, current)
+    else:
+        target = session.get(IndexGeneration, target_generation_id)
+        if target is not None and target.validation_status not in ("retired", "active"):
+            raise ReviewError("INVALID_TARGET", "only a previously validated generation can be restored", 422)
+    if target is None:
+        raise ReviewError("NO_PREVIOUS_GENERATION", "there is no earlier validated generation to restore")
+    if target.id == current.id:
+        raise ReviewError("INVALID_TARGET", "the target generation is already active", 422)
+    try:
+        touched = apply_manifest(session, target.manifest)
+    except LookupError as exc:
+        raise ReviewError("MANIFEST_UNAVAILABLE", str(exc)) from None
+    note = f"rollback to generation {target.number}: {reason.strip()}"
+    generation = _activate(session, trigger="rollback", changed=[], note=note, parent_id=target.id)
+    session.add(
+        ReviewEvent(
+            actor_id=actor_id,
+            decision="generation_rolled_back",
+            reason=reason.strip(),
+            details={
+                "from_generation": current.number,
+                "to_generation": target.number,
+                "new_generation": generation.number,
+                "versions_changed": [str(v.id) for v in touched],
+            },
+        )
+    )
+    session.flush()
+    return generation

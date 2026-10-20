@@ -1,16 +1,19 @@
+import logging
 import math
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
 import jwt
 from fastapi import Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from api.security import decode_access_token
@@ -18,7 +21,9 @@ from legal_core.config import Settings, get_settings
 from legal_core.db import get_sessionmaker
 from legal_core.embeddings import Embedder, get_embedder
 from legal_core.llm import AnswerModel, get_answer_model
-from legal_core.models import User
+from legal_core.models import RateLimitCounter, User
+
+log = logging.getLogger("api")
 
 
 class ApiError(Exception):
@@ -132,14 +137,41 @@ PageDep = Annotated[Page, Depends()]
 
 
 class RateLimiter:
-    """In-process sliding window per client address. Adequate for the single-instance MVP;
-    a multi-instance deployment needs a shared store."""
+    """Per-client request limits.
+
+    RATE_LIMIT_BACKEND=database (default): fixed one-minute windows counted in an UNLOGGED table, so
+    every API process and replica enforces one shared limit. If the database is unreachable the
+    limiter falls back to per-process counting rather than failing open.
+    RATE_LIMIT_BACKEND=memory: in-process sliding window (single process only)."""
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
     def check(self, key: str, limit: int, window: float = 60.0) -> None:
+        if get_settings().rate_limit_backend == "database":
+            try:
+                count = self._database_hit(key, window)
+            except Exception:
+                log.warning("rate_limit_store_unavailable", exc_info=True)
+            else:
+                if count > limit:
+                    raise ApiError(429, "RATE_LIMITED", "Too many requests. Please retry shortly.")
+                return
+        self._memory_hit(key, limit, window)
+
+    def _database_hit(self, key: str, window: float) -> int:
+        start = datetime.fromtimestamp(int(time.time() // window * window), UTC)
+        stmt = insert(RateLimitCounter).values(bucket=key[:200], window_start=start, count=1)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["bucket", "window_start"], set_={"count": RateLimitCounter.count + 1}
+        ).returning(RateLimitCounter.count)
+        with get_sessionmaker()() as session:
+            count = session.execute(stmt).scalar_one()
+            session.commit()
+        return count
+
+    def _memory_hit(self, key: str, limit: int, window: float) -> None:
         now = time.monotonic()
         with self._lock:
             hits = self._hits[key]
@@ -152,10 +184,26 @@ class RateLimiter:
     def reset(self) -> None:
         with self._lock:
             self._hits.clear()
+        if get_settings().rate_limit_backend == "database":
+            with get_sessionmaker()() as session:
+                session.execute(delete(RateLimitCounter))
+                session.commit()
 
 
 rate_limiter = RateLimiter()
 
 
+def client_address(request: Request) -> str:
+    """The caller's address. Behind TRUSTED_PROXY_COUNT reverse proxies it is read from
+    X-Forwarded-For that many entries from the right (entries further left are client-supplied and
+    could be forged); without proxies the socket peer is used."""
+    hops = get_settings().trusted_proxy_count
+    if hops > 0:
+        forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 def client_key(request: Request, bucket: str) -> str:
-    return f"{bucket}:{request.client.host if request.client else 'unknown'}"
+    return f"{bucket}:{client_address(request)}"

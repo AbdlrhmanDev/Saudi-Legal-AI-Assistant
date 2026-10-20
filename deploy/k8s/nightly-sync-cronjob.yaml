@@ -1,0 +1,26 @@
+# Option B (PRD v2 6.1): deployment-native schedule at 00:00 Asia/Riyadh.
+# Use with SYNC_SCHEDULER=false on the worker Deployment. Requires Kubernetes >= 1.27 for timeZone.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: legal-nightly-sync
+spec:
+  schedule: "0 0 * * *"
+  timeZone: "Asia/Riyadh"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 3  # plus in-app retries with exponential backoff and next-day catch-up
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: nightly-sync
+              image: ghcr.io/your-org/saudi-legal-ai:latest
+              command: ["python", "-m", "legal_core.cli", "nightly-sync"]
+              envFrom:
+                - configMapRef: {name: legal-ai}
+                - secretRef: {name: legal-ai}

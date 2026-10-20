@@ -1,7 +1,10 @@
 import logging
+import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 
+import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +15,7 @@ from api.deps import ApiError
 from api.routes import admin, auth, chat, health, laws
 from legal_core.config import get_settings
 from legal_core.logconfig import configure_logging
+from legal_core.official_services import run_official_service_refresh_loop
 
 log = logging.getLogger("api")
 
@@ -35,7 +39,35 @@ def create_app() -> FastAPI:
     settings.assert_safe_for_environment()
     configure_logging(settings.log_level)
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Sync endpoints run in this pool; size it for concurrent chats waiting on the model.
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.api_thread_limit
+        service_refresh_stop: threading.Event | None = None
+        service_refresh_thread: threading.Thread | None = None
+        if settings.official_service_search_enabled and settings.environment != "test":
+            service_refresh_stop = threading.Event()
+            service_refresh_thread = threading.Thread(
+                target=run_official_service_refresh_loop,
+                args=(service_refresh_stop,),
+                kwargs={
+                    "refresh_seconds": settings.official_service_refresh_seconds,
+                    "timeout_seconds": settings.official_service_timeout_seconds,
+                },
+                name="official-service-catalog-refresh",
+                daemon=True,
+            )
+            service_refresh_thread.start()
+        try:
+            yield
+        finally:
+            if service_refresh_stop is not None:
+                service_refresh_stop.set()
+            if service_refresh_thread is not None:
+                service_refresh_thread.join(timeout=0.2)
+
     app = FastAPI(
+        lifespan=lifespan,
         title="Saudi Legal AI Assistant API",
         version="0.1.0",
         description=(
@@ -98,6 +130,7 @@ def create_app() -> FastAPI:
         log.exception("unhandled_error", extra={"request_id": getattr(request.state, "request_id", None)})
         return _error(500, "INTERNAL_ERROR", "An unexpected error occurred.")
 
+    app.include_router(health.probes)
     for module in (health, auth, chat, laws, admin):
         app.include_router(module.router)
     return app

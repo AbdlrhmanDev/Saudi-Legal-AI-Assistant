@@ -26,4 +26,6 @@ RUN useradd --create-home app && mkdir -p /app/var/storage && chown -R app:app /
 USER app
 
 EXPOSE 8000
-CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# WEB_CONCURRENCY uvicorn processes per container (each with its own DB pool and thread pool).
+# Scale out with more containers; run the worker (python -m worker.main) as one separate service.
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2} --timeout-keep-alive 15 --no-server-header"]

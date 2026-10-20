@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, hasToken, setToken } from './api'
-import type { Candidate, Coverage, Page, User } from './api'
+import type { Candidate, Coverage, Freshness, Page, QuarantineItem, User } from './api'
 import { Chat } from './screens/Chat'
 import { Corpus } from './screens/Corpus'
 import { Ops } from './screens/Ops'
 import { Updates } from './screens/Updates'
 import { Icon, Logo } from './ui'
-import { DOMAIN_AR, ICON } from './uiData'
+import { DOMAIN_AR, ICON, fmtRiyadh } from './uiData'
 import type { Flash } from './uiData'
 import { useChat } from './useChat'
 
@@ -17,12 +17,14 @@ const NAV: { key: Screen; label: string; icon: string }[] = [
   { key: 'updates', label: 'التحديثات', icon: ICON.refresh },
   { key: 'ops', label: 'العمليات والتقييم', icon: ICON.pulse },
 ]
+const HEALTH_DOT = { healthy: '#2E7D5B', delayed: '#C08A1E', degraded: '#9B2C2C' } as const
 
 export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogout: () => void }) {
   const [user, setUser] = useState<User | null>(null)
   const [screen, setScreen] = useState<Screen>('chat')
   const [toast, setToast] = useState<{ text: string; bg: string } | null>(null)
   const [coverage, setCoverage] = useState<Coverage | null>(null)
+  const [freshness, setFreshness] = useState<Freshness | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const toastTimer = useRef<number | undefined>(undefined)
   const chat = useChat()
@@ -38,9 +40,14 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
 
   const refreshShell = useCallback(() => {
     api<Coverage>('/api/v1/coverage').then(setCoverage).catch(() => setCoverage(null))
+    api<Freshness>('/api/v1/freshness').then(setFreshness).catch(() => setFreshness(null))
     if (hasToken()) {
-      api<Page<Candidate>>('/api/v1/admin/updates?state=needs_review&limit=1')
-        .then((p) => setPendingCount(p.pagination.total))
+      // Routine updates publish themselves; the badge counts only what still needs a person.
+      Promise.all([
+        api<Page<Candidate>>('/api/v1/admin/updates?state=needs_review&limit=1'),
+        api<Page<QuarantineItem>>('/api/v1/admin/quarantine?limit=1'),
+      ])
+        .then(([pending, quarantined]) => setPendingCount(pending.pagination.total + quarantined.pagination.total))
         .catch(() => setPendingCount(0))
     }
   }, [])
@@ -121,6 +128,12 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
             <div style={{ fontSize: 12, color: '#5E655F', lineHeight: 1.7 }}>
               {coverage === null ? 'تعذّر تحميل التغطية.' : documents === 0 ? 'لا توجد وثائق معتمدة نافذة بعد.' : `${documents} وثائق معتمدة: ${domainNames}.`}
             </div>
+            {freshness && (
+              <div style={{ fontSize: 11.5, color: '#5E655F', lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: HEALTH_DOT[freshness.source_health] }} />
+                آخر مزامنة موثّقة: {freshness.corpus_verified_at ? fmtRiyadh(freshness.corpus_verified_at) : 'لم تتم بعد'}
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 6px 0', borderTop: '1px solid #E1DCD0' }}>
             <span style={{ width: 34, height: 34, borderRadius: '50%', background: '#DCE7E0', color: '#17543D', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700, flex: 'none' }}>
@@ -143,7 +156,7 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
       </aside>
 
       <main style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        {active === 'chat' && <Chat chat={chat} />}
+        {active === 'chat' && <Chat chat={chat} freshness={freshness} />}
         {active === 'corpus' && <Corpus flash={flash} onChanged={refreshShell} onOpenReview={() => setScreen('updates')} />}
         {active === 'updates' && <Updates flash={flash} onChanged={refreshShell} asOf={chat.asOf} />}
         {active === 'ops' && <Ops />}

@@ -1,5 +1,6 @@
 """HTTP contract: envelope, validation, server-side authorization, and the admin review flow."""
 
+import json
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from api.security import hash_password
 from legal_core.cli import create_admin
 from legal_core.db import get_sessionmaker
 from legal_core.jobs import claim_next_job, run_job
-from legal_core.models import IngestionJob, User, WorkerHeartbeat
+from legal_core.models import DocumentVersion, IngestionJob, SourceSnapshot, User, WorkerHeartbeat
 
 pytestmark = pytest.mark.integration
 
@@ -105,6 +106,25 @@ def test_chat_is_public_and_returns_the_answer_contract(client):
 
     article = client.get(f"/api/v1/articles/{data['citations'][0]['article_id']}").json()["data"]
     assert article["article"]["article_number"] == "5" and "تسعين يوماً" in article["article"]["original_text_ar"]
+
+
+def test_chat_stream_emits_validated_deltas_then_the_complete_contract(client):
+    with client.stream(
+        "POST",
+        "/api/v1/chat/stream",
+        json={"query": PROBATION, "domain": "labor", "as_of_date": "2026-10-12"},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/x-ndjson")
+        assert response.headers["x-accel-buffering"] == "no"
+        events = [json.loads(line) for line in response.iter_lines() if line]
+
+    assert events[0] == {"type": "start"}
+    assert events[-1]["type"] == "complete"
+    answer = events[-1]["data"]
+    streamed = "".join(event["delta"] for event in events if event["type"] == "delta")
+    assert streamed == answer["answer_ar"]
+    assert answer["answer_status"] == "grounded" and answer["citations"]
 
 
 @pytest.mark.parametrize(
@@ -218,7 +238,12 @@ def test_upload_review_approve_flow_over_http(client, admin, corpus, settings, e
     assert job["status"] == "succeeded" and job["counts"]["articles"] == 2
     assert job["result"]["metadata_gaps"] == ["issuing_authority", "effective_from"]
     stored = corpus.get(IngestionJob, uuid.UUID(job_id)).payload
-    assert stored["filename"] == "drone law.txt" and "/" not in stored["storage_path"]  # no path traversal
+    # Bytes travel as an immutable database snapshot: no client filename is ever used as a path,
+    # and the worker needs no access to the API's disk.
+    assert stored["filename"] == "drone law.txt" and "storage_path" not in stored
+    snapshot = corpus.get(SourceSnapshot, uuid.UUID(stored["snapshot_id"]))
+    version = corpus.get(DocumentVersion, uuid.UUID(job["result"]["version_id"]))
+    assert snapshot.content == NEW_LAW.encode() and version.snapshot_id == snapshot.id
 
     # The parsed version waits in the review queue and is invisible to the public.
     candidate_id = job["result"]["candidate_id"]
@@ -390,7 +415,7 @@ def test_feed_sync_and_reviewer_overrides_over_http(client, admin, settings, emb
 
     # Switching sources on and off: a feed source can be enabled, a manual-upload source cannot.
     by_policy = {s["crawl_policy"]: s for s in sources}
-    feed, manual = by_policy["feed_only"], by_policy["manual"]
+    feed, manual = by_policy["fetch_allowed"], by_policy["manual"]
     on = client.patch(f"/api/v1/admin/sources/{feed['id']}", headers=admin, json={"enabled": True})
     assert on.status_code == 200 and on.json()["data"]["enabled"] is True
     off = client.patch(f"/api/v1/admin/sources/{feed['id']}", headers=admin, json={"enabled": False})

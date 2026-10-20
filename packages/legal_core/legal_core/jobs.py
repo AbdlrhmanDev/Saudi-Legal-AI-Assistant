@@ -2,7 +2,8 @@
 
 Each job runs in its own transaction. A failure rolls that transaction back before
 the failure is recorded, so a failed or duplicate ingestion cannot leave partial
-articles behind.
+articles behind. Uploaded bytes travel as database snapshots, so the API and the worker
+can run as separate services without a shared volume.
 """
 
 import logging
@@ -16,9 +17,10 @@ from legal_core.config import Settings
 from legal_core.embeddings import Embedder
 from legal_core.indexing import reindex_version
 from legal_core.ingestion import DocumentMetadata, IngestionError, ingest_document
-from legal_core.models import DocumentVersion, IngestionJob, utcnow
+from legal_core.models import DocumentVersion, IngestionJob, SyncRun, utcnow
 from legal_core.monitor import Fetcher, MonitorError, fetch_with_retries, make_http_fetcher, sync_sources
 from legal_core.parser import ExtractionError
+from legal_core.snapshots import snapshot_content, store_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +29,8 @@ _EXT = {"pdf": ".pdf", "html": ".html", "text": ".txt"}
 
 
 def save_upload(content: bytes, kind: str, settings: Settings) -> str:
-    """Store under a server-generated name; the client filename is never used as a path."""
+    """Legacy file storage (jobs queued before snapshots were stored in the database).
+    Stored under a server-generated name; the client filename is never used as a path."""
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
     name = f"{uuid.uuid4().hex}{_EXT[kind]}"
     (settings.storage_dir / name).write_bytes(content)
@@ -79,20 +82,29 @@ def _execute(
     if job.job_type == "document_ingest":
         m = payload.get("meta", {})
         retries: list[str] = []
-        if payload.get("fetch_url"):
+        storage_path = None
+        if payload.get("snapshot_id"):
+            snapshot_id = uuid.UUID(payload["snapshot_id"])
+            content = snapshot_content(session, snapshot_id)
+        elif payload.get("fetch_url"):
             # Registered official URL (FR-01): fetched only from allowlisted hosts, then snapshotted.
             content = fetch_with_retries(
                 fetcher or make_http_fetcher(settings), payload["fetch_url"], settings, retries.append
             )
-            storage_path = save_upload(content, "html", settings)
+            snapshot_id = store_snapshot(
+                session, content, canonical_url=payload["fetch_url"], content_type="text/html",
+                is_test_data=bool(m.get("is_test_data")),
+            ).id  # fmt: skip
         else:
             content, storage_path = read_upload(payload["storage_path"], settings), payload["storage_path"]
+            snapshot_id = None
         result = ingest_document(
             session,
             content=content,
             filename=payload.get("filename"),
             mime_type=payload.get("mime_type"),
             storage_path=storage_path,
+            snapshot_id=snapshot_id,
             actor_id=job.created_by,
             settings=settings,
             meta=DocumentMetadata(
@@ -148,6 +160,10 @@ def run_job(
     failure: Exception | None = None
     with session_factory() as session:
         job = session.get(IngestionJob, job_id)
+        if job is not None and job.job_type == "nightly_sync":
+            return _run_sync_job(session_factory, job_id, settings, embedder, fetcher)
+    with session_factory() as session:
+        job = session.get(IngestionJob, job_id)
         if job is None:
             raise LookupError(f"job {job_id} not found")
         if job.status == "queued":
@@ -176,5 +192,30 @@ def run_job(
             else:
                 job.status, job.finished_at = "failed", utcnow()
             log.warning("job_failed", extra={"job_id": str(job_id), "job_type": job.job_type, "error": message})
+        session.commit()
+        return job.status
+
+
+def _run_sync_job(
+    session_factory: sessionmaker[Session], job_id: uuid.UUID, settings: Settings, embedder: Embedder, fetcher
+) -> str:
+    """Operator-triggered synchronization: the same pipeline as the midnight run."""
+    from legal_core.sync import run_manual_sync
+
+    with session_factory() as session:
+        job = session.get(IngestionJob, job_id)
+        job.status, job.started_at = "running", job.started_at or utcnow()
+        run_id = uuid.UUID(job.payload["run_id"])
+        session.commit()
+    status = run_manual_sync(session_factory, run_id, settings, embedder, fetcher=fetcher)
+    with session_factory() as session:
+        job = session.get(IngestionJob, job_id)
+        run = session.get(SyncRun, run_id)
+        job.status = "failed" if status == "failed" else "succeeded"
+        job.result, job.finished_at = {
+            "run_id": str(run_id),
+            "run_status": status,
+            "stage_counts": run.stage_counts if run else {},
+        }, utcnow()
         session.commit()
         return job.status

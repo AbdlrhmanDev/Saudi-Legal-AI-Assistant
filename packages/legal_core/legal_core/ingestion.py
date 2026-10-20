@@ -1,7 +1,7 @@
 """Document ingestion: validate -> extract -> parse -> store an immutable, unreviewed version.
 
-Ingestion never makes content authoritative. Every ingested version lands in the
-review queue (state needs_review) and is only indexed for retrieval on approval.
+Ingestion never makes content authoritative. Every ingested version lands in state needs_review
+and is only indexed for retrieval once the release gate (or a reviewer) publishes it.
 """
 
 import hashlib
@@ -52,6 +52,8 @@ class DocumentMetadata:
     instrument_id: uuid.UUID | None = None
     candidate_id: uuid.UUID | None = None
     is_test_data: bool = False
+    # The document is its own instrument even when the candidate names a target (a repeal notice).
+    standalone: bool = False
 
 
 @dataclass
@@ -104,7 +106,7 @@ def _metadata_gaps(version: DocumentVersion, instrument: LegalInstrument, settin
 def _resolve_instrument(
     session: Session, meta: DocumentMetadata, parsed_title: str | None, candidate: UpdateCandidate | None
 ) -> LegalInstrument:
-    instrument_id = meta.instrument_id or (candidate.target_instrument_id if candidate else None)
+    instrument_id = meta.instrument_id or (candidate.target_instrument_id if candidate and not meta.standalone else None)
     if instrument_id:
         instrument = session.get(LegalInstrument, instrument_id)
         if instrument is None:
@@ -142,6 +144,7 @@ def ingest_document(
     settings: Settings,
     actor_id: uuid.UUID | None = None,
     storage_path: str | None = None,
+    snapshot_id: uuid.UUID | None = None,
 ) -> IngestResult:
     if not content:
         raise IngestionError("empty document")
@@ -204,6 +207,7 @@ def ingest_document(
         original_filename=(filename or "")[:255] or None,
         mime_type={"pdf": "application/pdf", "html": "text/html", "text": "text/plain"}[kind],
         storage_path=storage_path,
+        snapshot_id=snapshot_id,
         raw_text=text,
         article_count=len(parsed.articles),
         parse_warnings=parsed.warnings,
@@ -245,7 +249,8 @@ def ingest_document(
             is_test_data=version.is_test_data,
         )
         session.add(candidate)
-    candidate.target_instrument_id = instrument.id
+    if not meta.standalone:
+        candidate.target_instrument_id = instrument.id
     candidate.proposed_version_id = version.id
     candidate.state = "needs_review"
     candidate.error = None

@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Domain = Literal["labor", "commercial", "data_protection", "other"]
 Classification = Literal[
-    "new_law", "amendment", "regulation", "royal_decree", "decision", "circular", "notice", "irrelevant"
+    "new_law", "amendment", "repeal", "regulation", "royal_decree", "decision", "circular", "notice", "draft",
+    "irrelevant",
 ]
 
 
@@ -68,9 +69,11 @@ class ChatRequest(StrictModel):
 
 class Citation(BaseModel):
     law_id: str
+    instrument_id: str
     article_id: str
     version_id: str
     source_url: str | None
+    official_url: str | None
     law_title_ar: str
     article_number: str | None
     article_label: str | None
@@ -80,6 +83,20 @@ class Citation(BaseModel):
     effective_to: date | None
     legal_status: str
     is_test_data: bool
+
+
+class RelatedService(BaseModel):
+    """A reviewed official transaction link; never a source for the legal answer."""
+
+    id: str
+    title_ar: str
+    description_ar: str
+    guidance_ar: str
+    provider_ar: str
+    official_url: str
+    official_info_url: str
+    last_verified_at: date
+    legal_evidence: Literal[False] = False
 
 
 class ChatAnswer(BaseModel):
@@ -93,6 +110,10 @@ class ChatAnswer(BaseModel):
     trace_id: str
     disclaimer_ar: str
     forthcoming: list[dict]
+    corpus_verified_at: str | None = Field(description="Finish time of the last verified sync (Asia/Riyadh).")
+    coverage_notice: str
+    source_health: Literal["healthy", "delayed", "degraded"]
+    related_services: list[RelatedService] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -147,3 +168,10 @@ class SyncRequest(StrictModel):
 class SourcePatch(StrictModel):
     enabled: bool | None = None
     check_interval: int | None = Field(default=None, ge=15, le=10080, description="Minutes between checks.")
+
+
+class IndexRollbackRequest(StrictModel):
+    reason: str = Field(min_length=3, max_length=2000)
+    target_generation_id: uuid.UUID | None = Field(
+        default=None, description="Generation to restore. Default: the one before the active generation."
+    )

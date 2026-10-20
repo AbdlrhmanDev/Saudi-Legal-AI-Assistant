@@ -1,14 +1,19 @@
-"""Official-source monitoring (FR-12..FR-14, lifecycle steps 1-4).
+"""Official-source monitoring (FR-12..FR-14, lifecycle steps 1-4; PRD v2 steps 1-4).
 
-A feed item is a detection signal only. It creates an update candidate for human
-review and never changes what users are told.
+A feed item is a detection signal only. It creates an update candidate and, where the source
+policy permits, an immutable snapshot of the official text. Whether anything is published is
+decided later by the deterministic release gate (legal_core.release), never here.
 """
 
 import hashlib
+import ipaddress
 import logging
 import re
+import socket
 import ssl
+import threading
 import time
+import urllib.robotparser
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -25,6 +30,7 @@ from legal_core.config import Settings
 from legal_core.ingestion import DocumentMetadata, ingest_document
 from legal_core.models import LegalInstrument, SourceRegistry, UpdateCandidate, utcnow
 from legal_core.normalize import lexical_tokens, normalize_ar
+from legal_core.snapshots import store_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +39,16 @@ _TRACKING = re.compile(r"^(utm_|fbclid$|gclid$)")
 _PARENS = re.compile(r"[\(\[].*?[\)\]]")
 _MAX_FEED_BYTES = 5 * 1024 * 1024
 _INTERMEDIATES = Path(__file__).parent / "certs" / "intermediates.pem"
+_ALLOWED_MIME = ("text/html", "application/xhtml+xml", "application/pdf", "text/plain", "application/rss+xml",
+                 "application/atom+xml", "application/xml", "text/xml")  # fmt: skip
 
-# Checked in order: an item about amending a law also contains the word "نظام".
-# Single words are matched as whole (light-stemmed) tokens, phrases as substrings.
+# Checked in order: an item about amending a law also contains the word "نظام", and a draft
+# amendment is still a draft. Single words are matched as whole (light-stemmed) tokens, phrases
+# as substrings.
 _CLASS_RULES = (
+    ("draft", ("مشروع نظام", "مشروع لايحه", "مشروع تعديل", "مشروع قواعد", "مسوده", "مرييات", "استطلاع")),
     ("amendment", ("تعديل", "تعديلات", "تعدل", "يعدل", "معدل", "استبدال", "تحذف", "تضاف")),
+    ("repeal", ("الغاء ", "يلغي", "تلغي", "ملغي")),
     ("regulation", ("لايحه", "لوايح", "قواعد", "ضوابط", "دليل")),
     ("new_law", ("نظام",)),
     ("royal_decree", ("مرسوم ملكي", "امر ملكي")),
@@ -142,27 +153,99 @@ def tls_context() -> ssl.SSLContext:
     return context
 
 
-def make_http_fetcher(settings: Settings) -> Fetcher:
+def assert_public_host(host: str) -> None:
+    """SSRF guard: every address the name resolves to must be publicly routable, so an allowlisted
+    name can never be pointed at loopback, private ranges or cloud metadata endpoints."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise MonitorError(f"cannot resolve {host}: {exc}") from None
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if not address.is_global or address.is_multicast:
+            raise SourcePolicyError(f"{host} resolves to a non-public address")
+
+
+def check_official_url(url: str, settings: Settings) -> str:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or host not in settings.allowlisted_hosts:
+        raise SourcePolicyError(f"host not allowlisted: {host}")
+    if parts.port not in (None, 443) or parts.username or parts.password:
+        raise SourcePolicyError("explicit ports and credentials are not allowed in source URLs")
+    return host
+
+
+def make_http_fetcher(
+    settings: Settings,
+    *,
+    resolve: Callable[[str], None] = assert_public_host,
+    transport: httpx.BaseTransport | None = None,
+) -> Fetcher:
+    """HTTPS GET restricted to allowlisted public hosts. Each redirect hop is re-validated; MIME type
+    and size are checked while streaming; robots.txt and a per-host delay are honoured."""
     context = tls_context()
+    limit = max(_MAX_FEED_BYTES, settings.max_upload_bytes)
+    last_request: dict[str, float] = {}
+    robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+    lock = threading.Lock()
+
+    def _polite(host: str) -> None:
+        with lock:
+            wait = last_request.get(host, 0.0) + settings.fetch_min_interval_seconds - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            last_request[host] = time.monotonic()
+
+    def _get(client: httpx.Client, url: str, *, check_mime: bool) -> bytes:
+        for _hop in range(4):
+            host = check_official_url(url, settings)
+            resolve(host)
+            _polite(host)
+            with client.stream("GET", url) as resp:
+                if resp.is_redirect:
+                    url = str(resp.url.join(resp.headers.get("location", "")))
+                    continue
+                resp.raise_for_status()
+                mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if check_mime and mime and mime not in _ALLOWED_MIME:
+                    raise SourcePolicyError(f"unsupported content type: {mime}")
+                declared = resp.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > limit:
+                    raise MonitorError("response too large")
+                body = bytearray()
+                for chunk in resp.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > limit:
+                        raise MonitorError("response too large")
+                return bytes(body)
+        raise SourcePolicyError("too many redirects")
+
+    def _robots_allows(client: httpx.Client, url: str) -> bool:
+        host = (urlsplit(url).hostname or "").lower()
+        if host not in robots:
+            parser = urllib.robotparser.RobotFileParser()
+            try:
+                body = _get(client, f"https://{host}/robots.txt", check_mime=False)
+                parser.parse(body.decode("utf-8", "replace").splitlines())
+                robots[host] = parser
+            except (httpx.HTTPError, MonitorError):
+                robots[host] = None  # no readable robots.txt: no published restrictions
+        parser = robots[host]
+        return parser is None or parser.can_fetch(settings.http_user_agent, url)
 
     def fetch(url: str) -> bytes:
-        host = (urlsplit(url).hostname or "").lower()
-        if urlsplit(url).scheme != "https" or host not in settings.allowlisted_hosts:
-            raise SourcePolicyError(f"host not allowlisted: {host}")
+        check_official_url(url, settings)
         with httpx.Client(
             verify=context,
             timeout=settings.fetch_timeout_seconds,
             headers={"User-Agent": settings.http_user_agent},
-            follow_redirects=True,
-            max_redirects=3,
+            follow_redirects=False,
+            transport=transport,
         ) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            if (resp.url.host or "").lower() not in settings.allowlisted_hosts:
-                raise SourcePolicyError(f"redirected to a host that is not allowlisted: {resp.url.host}")
-            if len(resp.content) > max(_MAX_FEED_BYTES, settings.max_upload_bytes):
-                raise MonitorError("response too large")
-            return resp.content
+            if settings.respect_robots_txt and not _robots_allows(client, url):
+                raise SourcePolicyError(f"disallowed by robots.txt: {url}")
+            return _get(client, url, check_mime=True)
 
     return fetch
 
@@ -262,46 +345,67 @@ def sync_source(
             target_instrument_id=guess_target_instrument(session, title, summary),
             state="candidate",
             is_test_data=source.is_test_data,
+            document_ref=_document_ref(source, canonical, entry),
         )
         session.add(candidate)
         session.flush()
         counts["changed" if known else "new"] += 1
 
-        if candidate.classification != "irrelevant":
-            _acquire(session, source, candidate, entry, settings, fetch, on_retry, counts)
+        # Drafts, notices and unrelated items are never fetched: they cannot become binding text.
+        if candidate.classification not in ("irrelevant", "draft", "notice"):
+            acquire(session, source, candidate, settings, fetch, on_retry, counts)
 
     return counts
 
 
-def _acquire(session, source, candidate, entry, settings, fetch, on_retry, counts) -> None:
-    """Lifecycle step 3: take an immutable snapshot of the official text when the source policy
-    permits automated retrieval. Otherwise the candidate waits for a manual admin upload."""
+def _document_ref(source: SourceRegistry, canonical: str, entry) -> str | None:
     if source.crawl_policy == "fixture":
         enclosures = entry.get("enclosures") or []
-        ref = enclosures[0].get("href") if enclosures else None
-    elif source.crawl_policy == "fetch_allowed":
-        ref = candidate.canonical_url
-    else:
-        ref = None
+        return enclosures[0].get("href") if enclosures else None
+    if source.crawl_policy == "fetch_allowed":
+        return canonical
+    return None  # feed_only: the official text has to be supplied another way
+
+
+def acquire(session, source, candidate, settings, fetch, on_retry, counts) -> None:
+    """Lifecycle steps 2-4: take an immutable snapshot of the official text when the source policy
+    permits automated retrieval, then parse it. A failure is recorded on the candidate and retried by
+    a later run; it never aborts the run or touches the corpus."""
+    ref = candidate.document_ref
     if not ref:
         return
     try:
         with session.begin_nested():
             content = fetch_with_retries(fetch, ref, settings, on_retry)
+            published = candidate.published_at.date() if candidate.published_at else None
+            snapshot = store_snapshot(
+                session,
+                content,
+                canonical_url=candidate.canonical_url,
+                source_id=source.id,
+                published_at=published,
+                is_test_data=source.is_test_data,
+            )
             candidate.state = "retrieved"
+            # A repeal decision names the instrument it ends; it is stored as its own notice.
+            repeal = candidate.classification == "repeal"
             ingest_document(
                 session,
                 content=content,
                 filename=Path(urlsplit(ref).path).name or None,
                 mime_type=None,
                 meta=DocumentMetadata(
+                    title_ar=candidate.title if repeal else None,
+                    instrument_type="notice" if repeal else None,
                     source_url=candidate.canonical_url,
                     issuing_authority=source.authority,
-                    published_at=candidate.published_at.date() if candidate.published_at else None,
+                    published_at=published,
                     candidate_id=candidate.id,
                     is_test_data=source.is_test_data,
+                    standalone=repeal,
                 ),
                 settings=settings,
+                snapshot_id=snapshot.id,
             )
         counts["acquired"] += 1
     except Exception as exc:  # one bad document must not abort the run or touch the corpus

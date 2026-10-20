@@ -1,0 +1,62 @@
+# Stateless API: scale horizontally. Secrets come from a Secret named legal-ai (DATABASE_URL,
+# JWT_SECRET, ADMIN_PASSWORD, OPENAI_API_KEY); shared settings from the ConfigMap legal-ai.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legal-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: legal-api}
+  template:
+    metadata:
+      labels: {app: legal-api}
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/saudi-legal-ai:latest
+          ports: [{containerPort: 8000}]
+          envFrom:
+            - configMapRef: {name: legal-ai}
+            - secretRef: {name: legal-ai}
+          env:
+            - {name: WEB_CONCURRENCY, value: "2"}
+            - {name: TRUSTED_PROXY_COUNT, value: "1"}  # one ingress controller in front
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: 8000}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legal-api
+spec:
+  selector: {app: legal-api}
+  ports: [{port: 80, targetPort: 8000}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: legal-api
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: legal-api}
+  minReplicas: 2
+  maxReplicas: 10  # keep (pool + overflow) x WEB_CONCURRENCY x maxReplicas within PgBouncer limits
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: legal-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: legal-api}

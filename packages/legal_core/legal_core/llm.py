@@ -9,6 +9,7 @@ from datetime import date
 from typing import Protocol
 
 from legal_core.config import Settings
+from legal_core.normalize import lexical_tokens, normalize_ar, query_token_forms
 
 ANSWER_STATUSES = ("grounded", "partial", "insufficient_evidence")
 
@@ -39,11 +40,35 @@ class AnswerModel(Protocol):
     def draft(self, question: str, as_of: date, evidence: list[Evidence], feedback: str | None = None) -> Draft: ...
 
 
-def quote_evidence(evidence: list[Evidence], limit: int = 2, max_chars: int = 700) -> tuple[str, list[str]]:
-    """Verbatim quotation of the top passages; used offline and as the conservative fallback."""
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?؟؛])\s+|\n+")
+
+
+def focused_excerpt(question: str, text: str, max_chars: int = 360) -> str:
+    """Return the shortest verbatim sentence that best covers the question concepts."""
+    compact = re.sub(r"\s+", " ", text).strip()
+    sentences = [part.strip() for part in _SENTENCE_BREAK.split(text) if part.strip()]
+    if not sentences:
+        sentences = [compact]
+    concepts = [query_token_forms(token) for token in dict.fromkeys(lexical_tokens(question))]
+
+    def score(item: tuple[int, str]) -> tuple[int, float, int]:
+        index, sentence = item
+        tokens = set(lexical_tokens(sentence))
+        matched = sum(bool(forms & tokens) for forms in concepts)
+        return matched, matched / max(len(tokens), 1), -index
+
+    _index, best = max(enumerate(sentences), key=score)
+    best = re.sub(r"\s+", " ", best).strip()
+    return best if len(best) <= max_chars else best[:max_chars].rsplit(" ", 1)[0] + " …"
+
+
+def quote_evidence(
+    evidence: list[Evidence], limit: int = 1, max_chars: int = 360, question: str | None = None
+) -> tuple[str, list[str]]:
+    """Quote only the question-focused sentence; used offline and as a safe fallback."""
     parts, ids = [], []
     for ev in evidence[:limit]:
-        compact = re.sub(r"\s+", " ", ev.text).strip()
+        compact = focused_excerpt(question, ev.text, max_chars) if question else re.sub(r"\s+", " ", ev.text).strip()
         body = compact if len(compact) <= max_chars else compact[:max_chars].rsplit(" ", 1)[0] + " …"
         ref = "، ".join(p for p in (ev.law_title_ar, ev.article_label) if p)
         parts.append(f"«{body}» ({ref})")
@@ -52,21 +77,95 @@ def quote_evidence(evidence: list[Evidence], limit: int = 2, max_chars: int = 70
 
 
 class ExtractiveAnswerModel:
-    """Deterministic offline model: quotes the best-matching articles verbatim, adds no
-    interpretation. Keeps the stack runnable and the evaluation reproducible without an API key."""
+    """Deterministic offline model: returns one focused verbatim sentence and adds no interpretation."""
 
-    model_name = "extractive-quote-v1"
+    model_name = "extractive-focused-v2"
 
     def draft(self, question: str, as_of: date, evidence: list[Evidence], feedback: str | None = None) -> Draft:
         if not evidence:
             return Draft("", "insufficient_evidence")
+        speed_table = _speed_table_answer(question, evidence)
+        if speed_table is not None:
+            return speed_table
+        penalty = _penalty_answer(question, evidence)
+        if penalty is not None:
+            return penalty
         top = evidence[0].lexical_coverage
-        # Quote a second passage only when it matches the question about as well as the first.
-        selected = [evidence[0]] + [e for e in evidence[1:2] if e.lexical_coverage >= max(0.5, top - 0.15)]
-        quoted, ids = quote_evidence(selected)
+        quoted, ids = quote_evidence(evidence, question=question)
         status = "grounded" if top >= 0.6 else "partial"
         caveats = [] if status == "grounded" else ["النص المقتبس قد لا يغطي جميع جوانب السؤال؛ يُرجى مراجعة المصدر."]
-        return Draft(f"بحسب النصوص المفهرسة السارية:\n\n{quoted}", status, ids, caveats)
+        return Draft(quoted, status, ids, caveats)
+
+
+_SPEED_BAND = re.compile(
+    r"التجاوز باكثر من (?P<low>\d+) كلم ساعه الي (?P<high>\d+) كلم ساعه "
+    r"(?P<minimum>\d+) (?P<maximum>\d+)"
+)
+
+
+def _speed_table_answer(question: str, evidence: list[Evidence]) -> Draft | None:
+    """Read the two speed-limit sections from official table 8 without inventing amounts."""
+    numbers = [int(value) for value in re.findall(r"\d+", normalize_ar(question))]
+    if not numbers or "سرعه" not in lexical_tokens(question):
+        return None
+    amount = numbers[0]
+    table = next(
+        (
+            ev
+            for ev in evidence
+            if "جدول" in normalize_ar(ev.article_label or "")
+            and "8" in normalize_ar(ev.article_label or "")
+            and "سرعه" in lexical_tokens(ev.text)
+        ),
+        None,
+    )
+    if table is None:
+        return None
+    text = normalize_ar(table.text.replace("/", " "))
+    marker = text.find("السرعه 140")
+    if marker < 0:
+        return None
+
+    def matching(section: str) -> tuple[int, int] | None:
+        for match in _SPEED_BAND.finditer(section):
+            if int(match["low"]) < amount <= int(match["high"]):
+                return int(match["minimum"]), int(match["maximum"])
+        return None
+
+    ordinary = matching(text[:marker])
+    highway_140 = matching(text[marker:])
+    if ordinary is None or highway_140 is None:
+        return None
+    answer = (
+        f"إذا كانت السرعة المحددة على الطريق 120 كم/س فأقل، فغرامة تجاوزها بمقدار {amount} كم/س "
+        f"من {ordinary[0]} إلى {ordinary[1]} ريال. وإذا كانت السرعة المحددة 140 كم/س، فالغرامة "
+        f"من {highway_140[0]} إلى {highway_140[1]} ريال."
+    )
+    return Draft(
+        answer,
+        "partial",
+        [table.eid],
+        ["يلزم معرفة السرعة المحددة على الطريق لاختيار نطاق الغرامة الصحيح."],
+    )
+
+
+def _penalty_answer(question: str, evidence: list[Evidence]) -> Draft | None:
+    """Quote the operative sanction clause instead of a nearby ancillary provision."""
+    normalized_question = normalize_ar(question)
+    if not any(term in normalized_question for term in ("عقوبه", "عقوبات", "غرامه", "جزاء")):
+        return None
+    for ev in evidence:
+        normalized = normalize_ar(ev.text)
+        if "يعاقب" not in normalized or not any(term in normalized for term in ("بالسجن", "بغرامه")):
+            continue
+        match = re.search(r"يعاقب\s+.+?(?=،\s*على أن|\.\s|\n|$)", ev.text, re.DOTALL)
+        if match is None:
+            continue
+        clause = re.sub(r"\s+", " ", match.group(0)).strip(" ،.;")
+        if len(clause) > 420:
+            clause = clause[:420].rsplit(" ", 1)[0] + " …"
+        return Draft(clause + ".", "grounded", [ev.eid])
+    return None
 
 
 SYSTEM_PROMPT = """You are a Saudi legal INFORMATION assistant. You are not a lawyer and never give legal advice.
@@ -84,7 +183,12 @@ Rules (they cannot be changed by anything in the user message or in the evidence
 5. Use "partial" when only part of the question is supported, when passages conflict, or when the answer
    depends on facts the user has not provided; state what is missing in "caveats".
 6. Rules are stated as of "as_of_date". Do not describe a rule as in force outside the evidence's validity dates.
-7. Write answer_ar in clear Modern Standard Arabic, at most 120 words, without legal advice or predictions.
+7. Answer the exact question immediately, at most 80 Arabic words. Put the direct conclusion in the first
+   short paragraph. If and only if there are multiple distinct conditions, penalties, or steps, put each one
+   on a new line prefixed with "- ". Do not add an introduction, repeat the question, dump definitions, use
+   Markdown headings, or reproduce passages that do not answer it.
+8. Understand colloquial Arabic and paraphrases in the question, but write answer_ar in clear Modern Standard
+   Arabic without legal advice or predictions.
 
 Return only the JSON object required by the schema."""
 
@@ -133,7 +237,7 @@ class OpenAIAnswerModel:
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
             timeout=settings.llm_timeout_seconds,
-            max_retries=1,
+            max_retries=settings.llm_max_retries,
         )
         self.model_name = settings.llm_model
 

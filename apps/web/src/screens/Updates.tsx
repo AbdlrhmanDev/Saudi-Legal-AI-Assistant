@@ -3,11 +3,11 @@ import type { FormEvent } from 'react'
 import { ApiError, api, waitForJob } from '../api'
 import type { Candidate, CandidateDetail, DiffChange, Page, Source } from '../api'
 import { Empty, Icon, Pill, TestBadge } from '../ui'
-import { CLASS_AR, ICON, WARNING_AR, fmtDate, fmtDateTime, pillOf, shortId } from '../uiData'
+import { CLASS_AR, ICON, REASON_AR, WARNING_AR, fmtDate, fmtDateTime, pillOf, shortId } from '../uiData'
 import type { Flash } from '../uiData'
 
 const BLOCKING = Object.keys(WARNING_AR)
-const OPEN_STATES = ['candidate', 'retrieved', 'parsed', 'needs_review', 'failed']
+const OPEN_STATES = ['candidate', 'retrieved', 'parsed', 'needs_review', 'failed', 'quarantined']
 const pillKey = (state: string) => (state === 'needs_review' ? 'pending' : state)
 
 /** Word-level common prefix/suffix, so only the changed span is marked. */
@@ -45,7 +45,7 @@ export function Updates({ flash, onChanged, asOf }: { flash: Flash; onChanged: (
     try {
       const page = await api<Page<Candidate>>('/api/v1/admin/updates?limit=50')
       setItems(page.items)
-      setSelected((cur) => (cur && page.items.some((i) => i.id === cur) ? cur : (page.items.find((i) => i.state === 'needs_review')?.id ?? page.items[0]?.id ?? null)))
+      setSelected((cur) => (cur && page.items.some((i) => i.id === cur) ? cur : (page.items.find((i) => i.state === 'needs_review' || i.state === 'quarantined')?.id ?? page.items[0]?.id ?? null)))
       setSources((await api<{ items: Source[] }>('/api/v1/admin/sources')).items)
     } catch (e) {
       flash(e instanceof Error ? e.message : 'تعذّر التحميل.', 'err')
@@ -106,7 +106,9 @@ export function Updates({ flash, onChanged, asOf }: { flash: Flash; onChanged: (
   const stateKey = c ? (c.state === 'approved' && rolledBack ? 'rolled_back' : pillKey(c.state)) : 'pending'
   const statePill = pillOf(stateKey)
   const open = !!c && OPEN_STATES.includes(c.state)
-  const canApprove = c?.state === 'needs_review'
+  // Quarantined items can be corrected by an operator (escape hatch); routine items never need this.
+  const canApprove = (c?.state === 'needs_review' || c?.state === 'quarantined') && !!version
+  const gateReason = c?.state === 'quarantined' || c?.state === 'excluded' ? c.evidence?.gate?.reasons?.[0] : undefined
   const approveReady = canApprove && confirmed && !!effective && evidence.trim().length >= 5 && (warnings.length === 0 || acknowledged)
   const lastDecision = detail?.review_events.filter((e) => e.decision !== 'classification_override').pop()
 
@@ -155,14 +157,17 @@ export function Updates({ flash, onChanged, asOf }: { flash: Flash; onChanged: (
         <div style={{ padding: '22px 18px 14px', display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{ margin: 0, flex: 1, fontSize: 21, fontWeight: 700 }}>التحديثات</h1>
-            <button onClick={sync} disabled={busy} style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #D9D4C8', background: '#fff', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', color: '#1F5F4A', opacity: busy ? 0.55 : 1 }}>
+            <button title="يفحص المصادر ويضيف العناصر إلى قائمة التحديثات فقط؛ لا يعتمدها ولا يفهرسها" onClick={sync} disabled={busy} style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #D9D4C8', background: '#fff', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', color: '#1F5F4A', opacity: busy ? 0.55 : 1 }}>
               <Icon d={ICON.refresh} size={14} />
-              فحص الآن
+              فحص المصادر فقط
             </button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: failing ? '#8A3A12' : '#5E655F' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: failing ? '#C0602A' : lastCheck ? '#2E7D5B' : '#A8A69E', flex: 'none' }} />
             {failing ? `تعذّر فحص «${failing.name}»` : lastCheck ? `آخر فحص ناجح للمصادر: ${fmtDateTime(lastCheck)}` : 'لم يُفحص أي مصدر بعد'}
+          </div>
+          <div style={{ fontSize: 11.5, color: '#7A7F7A', lineHeight: 1.6 }}>
+            هذا الزر يكتشف العناصر فقط. النشر في RAG يتم عبر المزامنة الليلية الكاملة بعد اجتياز فحوص السلامة.
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '0 12px 20px' }}>
@@ -269,6 +274,23 @@ export function Updates({ flash, onChanged, asOf }: { flash: Flash; onChanged: (
                 <Empty>{version ? (c.diff ? 'هذا العنصر وثيقة جديدة أو لا يغيّر نص أي مادة في المدونة.' : 'لا توجد مقارنة متاحة.') : 'الاعتماد مقفل حتى إرفاق النص الرسمي الكامل.'}</Empty>
               )}
 
+              {gateReason && (
+                <div role="note" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 16px', borderRadius: 12, background: c.state === 'quarantined' ? '#FBF1EA' : '#F4F3EF', border: `1px solid ${c.state === 'quarantined' ? '#EBCDB9' : '#E1DCD0'}`, fontSize: 13.5, lineHeight: 1.7 }}>
+                  <span style={{ color: '#8A3A12', display: 'flex', marginTop: 3 }}>
+                    <Icon d={ICON.warn} size={17} />
+                  </span>
+                  <span>
+                    <strong>{c.state === 'quarantined' ? 'حجزته بوابة النشر الآلية' : 'استبعدته المزامنة الآلية'}:</strong> {REASON_AR[gateReason.code] ?? gateReason.code}
+                    {gateReason.detail && (
+                      <span dir="auto" style={{ display: 'block', fontSize: 12.5, color: '#5E655F' }}>
+                        {gateReason.detail}
+                      </span>
+                    )}
+                    {c.state === 'quarantined' && <span style={{ display: 'block', fontSize: 12.5, color: '#5E655F' }}>لم يتغير شيء في الإجابات. يمكنك التحقق من المصدر واعتماده يدويًا أو رفضه.</span>}
+                  </span>
+                </div>
+              )}
+
               {open && (
                 <div className="card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px 16px' }}>
@@ -353,7 +375,9 @@ export function Updates({ flash, onChanged, asOf }: { flash: Flash; onChanged: (
                       ? `أُلغي تفعيل هذا الإصدار في ${fmtDateTime(lastDecision?.decision_at)}. السبب: ${lastDecision?.reason ?? 'غير مذكور'}`
                       : c.state === 'approved'
                         ? `اعتُمد في ${fmtDateTime(lastDecision?.decision_at)}. ${version?.effective_from && version.effective_from > asOf ? `سيظهر في الإجابات اعتبارًا من ${fmtDate(version.effective_from)}، ولم تتغير الإجابات الحالية.` : 'النص نافذ ومُضاف إلى المدونة.'}`
-                        : `رُفض في ${fmtDateTime(lastDecision?.decision_at)}. السبب: ${lastDecision?.reason ?? 'غير مذكور'}`}
+                        : c.state === 'excluded'
+                          ? 'استُبعد آليًا: ليس تغييرًا نظاميًا ملزمًا، ولا يدخل في المدونة.'
+                          : `رُفض في ${fmtDateTime(lastDecision?.decision_at)}. السبب: ${lastDecision?.reason ?? 'غير مذكور'}`}
                   </span>
                   {c.state === 'approved' && version?.index_active && (
                     <button onClick={rollback} disabled={busy} style={{ whiteSpace: 'nowrap', border: '1px solid #D9D4C8', background: '#fff', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: '#1B1F1D' }}>

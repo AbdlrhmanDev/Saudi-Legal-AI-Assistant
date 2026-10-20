@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEST DATA. A simulated official-gazette feed for the nightly synchronization tests.
+     Nothing here is a real publication. -->
+<rss version="2.0">
+  <channel>
+    <title>نشرة تجريبية للقرارات والأنظمة (بيانات اختبار)</title>
+    <link>https://fixture.invalid/feed</link>
+    <description>Simulated feed for the autonomous nightly synchronization</description>
+    <item>
+      <title>نظام التجارة الإلكترونية التجريبي</title>
+      <link>https://fixture.invalid/laws/2001</link>
+      <guid isPermaLink="false">nightly-2001</guid>
+      <pubDate>Thu, 08 Oct 2026 09:00:00 +0300</pubDate>
+      <description>صدر نظام التجارة الإلكترونية التجريبي. (بيانات اختبار)</description>
+      <enclosure url="nightly/ecommerce_v1.txt" type="text/plain" length="0"/>
+    </item>
+    <item>
+      <title>مشروع لائحة تجريبية لحماية المستهلك لطلب المرئيات</title>
+      <link>https://fixture.invalid/consultations/2002</link>
+      <guid isPermaLink="false">nightly-2002</guid>
+      <pubDate>Thu, 08 Oct 2026 10:00:00 +0300</pubDate>
+      <description>مسودة معروضة لاستطلاع آراء العموم، ولا تعد نصاً نظامياً. (بيانات اختبار)</description>
+      <enclosure url="nightly/ecommerce_v1.txt" type="text/plain" length="0"/>
+    </item>
+    <item>
+      <title>الوزارة التجريبية تستعرض إنجازات الربع الثالث</title>
+      <link>https://fixture.invalid/news/2003</link>
+      <guid isPermaLink="false">nightly-2003</guid>
+      <pubDate>Thu, 08 Oct 2026 11:00:00 +0300</pubDate>
+      <description>خبر صحفي عام. (بيانات اختبار)</description>
+    </item>
+  </channel>
+</rss>

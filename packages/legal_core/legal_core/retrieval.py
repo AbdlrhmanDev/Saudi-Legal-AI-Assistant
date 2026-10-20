@@ -10,6 +10,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -18,7 +19,7 @@ from legal_core.config import Settings
 from legal_core.embeddings import Embedder
 from legal_core.indexing import article_context
 from legal_core.models import Article, ArticleChunk, DocumentVersion, LegalInstrument
-from legal_core.normalize import detect_language, lexical_tokens
+from legal_core.normalize import detect_language, lexical_tokens, normalize_ar, query_token_forms
 from legal_core.parser import _DIGITS, INJECTION_PATTERNS, clean_source_text, parse_ordinal
 from legal_core.temporal import in_force_on
 
@@ -27,6 +28,11 @@ log = logging.getLogger(__name__)
 _ARTICLE_MENTION = re.compile(r"(?:ال)?ماد[ةه]\s+")
 _PARENS = re.compile(r"[\(\[].*?[\)\]]")
 _LEXICAL_POOL = 100
+_DOMAIN_QUERY_FORMS = {
+    "commercial": {"تجاري", "تجاريه", "تجاره", "اقتصادي", "اقتصاديه"},
+    "labor": {"عمل", "عمال", "عامل", "عمالي", "عماليه"},
+    "data_protection": {"بيانات", "شخصيه", "خصوصيه"},
+}
 
 
 @dataclass
@@ -51,7 +57,10 @@ class RetrievedArticle:
     lexical_score: float | None = None
     vector_rank: int | None = None
     vector_similarity: float | None = None
+    lexical_matches: int = 0
     lexical_coverage: float = 0.0
+    topic_anchor_match: bool = False
+    concept_window_match: bool = False
     strong: bool = False
     quarantined: bool = False
 
@@ -66,7 +75,10 @@ class RetrievedArticle:
             "lexical_score": None if self.lexical_score is None else round(self.lexical_score, 6),
             "vector_rank": self.vector_rank,
             "vector_similarity": None if self.vector_similarity is None else round(self.vector_similarity, 4),
+            "lexical_matches": self.lexical_matches,
             "lexical_coverage": round(self.lexical_coverage, 3),
+            "topic_anchor_match": self.topic_anchor_match,
+            "concept_window_match": self.concept_window_match,
             "strong": self.strong,
             "quarantined": self.quarantined,
         }
@@ -117,6 +129,48 @@ def _dedupe(ids: list[uuid.UUID]) -> list[uuid.UUID]:
     return [i for i in ids if not (i in seen or seen.add(i))]
 
 
+def _concept_matches(concepts: list[set[str]], haystack: set[str]) -> int:
+    return sum(bool(forms & haystack) for forms in concepts)
+
+
+def _topic_anchors(concepts: list[set[str]], lexical_rows: list[set[str]]) -> list[set[str]]:
+    """Choose the least-common query concept(s) as the topic identity gate.
+
+    PostgreSQL's simple ts_rank has no IDF. Without this extra gate, two generic words can make
+    an unrelated long regulation look relevant while the actual topic word is completely absent.
+    A real semantic embedding may still pass independently when it recognizes a paraphrase.
+    """
+    if not concepts:
+        return []
+    frequencies = [sum(bool(forms & row) for row in lexical_rows) for forms in concepts]
+    # A paraphrase may include a word that does not occur verbatim anywhere in the corpus
+    # (for example "ما حكم ..." while the operative text starts with "يحظر"). Such a zero-hit
+    # concept cannot identify a topic and must not veto all otherwise exact matches.
+    positive = [frequency for frequency in frequencies if frequency > 0]
+    if not positive:
+        return []
+    least = min(positive)
+    return [forms for forms, frequency in zip(concepts, frequencies, strict=True) if frequency == least]
+
+
+def _concepts_share_window(concepts: list[set[str]], tokens: list[str], size: int = 32) -> bool:
+    """Require all query concepts to describe one local passage, not distant parts of a long law."""
+    if not concepts:
+        return False
+    for start in range(len(tokens)):
+        window = set(tokens[start : start + size])
+        if all(forms & window for forms in concepts):
+            return True
+    return False
+
+
+def _near_token(left: str, right: str) -> bool:
+    """Conservative typo/inflection match for an instrument title, not passage evidence."""
+    return left == right or (
+        len(left) >= 5 and len(right) >= 5 and SequenceMatcher(None, left, right).ratio() >= 0.82
+    )
+
+
 def _eligible(as_of: date, domain: str | None):
     stmt = (
         select()
@@ -131,12 +185,17 @@ def _eligible(as_of: date, domain: str | None):
     return stmt
 
 
-def _instrument_hints(session: Session, tokens: set[str], as_of: date, domain: str | None) -> set[uuid.UUID]:
-    """Statutes named in the question: at least half of the title's content stems appear in it."""
+def _instrument_hints(session: Session, tokens: set[str], domain: str | None) -> set[uuid.UUID]:
+    """Approved instruments named in the question, including scheduled future versions.
+
+    Title/entity matching is deliberately independent of effective time. Otherwise a question
+    naming a scheduled instrument can silently drift to an unrelated instrument that happens to
+    be in force and shares generic words such as "licence".
+    """
     stmt = (
         select(LegalInstrument.id, LegalInstrument.official_title_ar)
         .join(DocumentVersion, DocumentVersion.instrument_id == LegalInstrument.id)
-        .where(in_force_on(as_of))
+        .where(DocumentVersion.review_status == "approved", DocumentVersion.index_active.is_(True))
         .distinct()
     )
     if domain:
@@ -144,7 +203,8 @@ def _instrument_hints(session: Session, tokens: set[str], as_of: date, domain: s
     hinted = set()
     for instrument_id, title in session.execute(stmt):
         title_tokens = set(lexical_tokens(_PARENS.sub(" ", title)))
-        if title_tokens and len(title_tokens & tokens) / len(title_tokens) >= 0.5:
+        matched = sum(any(_near_token(title_token, query_token) for query_token in tokens) for title_token in title_tokens)
+        if title_tokens and matched / len(title_tokens) >= 0.5:
             hinted.add(instrument_id)
     return hinted
 
@@ -161,7 +221,24 @@ def retrieve(
 ) -> RetrievalResult:
     top_k = top_k or settings.retrieval_top_k
     tokens = list(dict.fromkeys(lexical_tokens(query)))
-    token_set = set(tokens)
+    # Users sometimes describe the source of an answer conversationally ("حسب تعليمات
+    # المساعد الآلي").  That phrase is not part of the requested legal rule and, worse,
+    # can make an injected passage the rarest lexical match.  Remove it only as a complete
+    # assistant-meta phrase; standalone questions about official instructions still work.
+    # In Saudi conversational usage "كم مخالفة؟" asks for the monetary fine, not for a
+    # definition of the violation.  Rewrite only that question pattern; the stored text and
+    # all other uses of "مخالفة" remain untouched.
+    if "كم" in normalize_ar(query).split() and "مخالفه" in tokens:
+        tokens = ["غرامه" if token == "مخالفه" else token for token in tokens]
+    retrieval_tokens = list(tokens)
+    if {"تعليمات", "مساعد"}.issubset(tokens):
+        tokens = [token for token in tokens if token not in {"تعليمات", "مساعد"}]
+    concepts = [query_token_forms(token) for token in tokens]
+    # Search the full wording so a matching hostile passage remains visible in the
+    # diagnostic trace and can trigger the exclusion warning, while evidence gating
+    # uses the legal concepts after removing assistant-meta wording above.
+    retrieval_concepts = [query_token_forms(token) for token in retrieval_tokens]
+    search_tokens = set().union(*retrieval_concepts) if retrieval_concepts else set()
     result = RetrievalResult(
         language=detect_language(query), query_tokens=tokens, article_hints=extract_article_hints(query)
     )
@@ -173,8 +250,10 @@ def retrieve(
     #    so the pool is re-ordered by how many distinct query stems each chunk covers.
     lexical_ids: list[uuid.UUID] = []
     lexical_scores: dict[uuid.UUID, float] = {}
+    lexical_token_rows: list[set[str]] = []
+    best_lexical_tokens: dict[uuid.UUID, list[str]] = {}
     if tokens:
-        tsq = func.to_tsquery("simple", " | ".join(tokens))
+        tsq = func.to_tsquery("simple", " | ".join(sorted(search_tokens)))
         score = func.ts_rank(ArticleChunk.lexical_index, tsq, 1)
         rows = session.execute(
             eligible.add_columns(
@@ -185,14 +264,22 @@ def retrieve(
             .limit(_LEXICAL_POOL)
         ).all()
         scored = sorted(
-            rows, key=lambda r: (-len(token_set & set(r.lexical_text.split())), -float(r[4]), str(r[0]))
+            rows,
+            key=lambda r: (
+                -_concept_matches(concepts, set(r.lexical_text.split())),
+                -float(r[4]),
+                str(r[0]),
+            ),
         )
-        for article_id, instrument_id, chunk_text, _lex, rank_score in scored:
+        lexical_token_rows = [set(row.lexical_text.split()) for row in rows]
+        for article_id, instrument_id, chunk_text, lex, rank_score in scored:
             instrument_of[article_id] = instrument_id
             best_chunk.setdefault(article_id, chunk_text)
+            best_lexical_tokens.setdefault(article_id, lex.split())
             lexical_scores.setdefault(article_id, float(rank_score))
             lexical_ids.append(article_id)
         lexical_ids = _dedupe(lexical_ids)[: settings.retrieval_candidate_k]
+    topic_anchors = _topic_anchors(concepts, lexical_token_rows)
 
     # 2) Vector: pgvector cosine distance. A provider failure degrades to lexical-only.
     vector_ids: list[uuid.UUID] = []
@@ -224,11 +311,21 @@ def retrieve(
 
     # 3) Query hints become extra rankings: an explicitly requested article number and
     #    a statute named in the question.
-    hinted_instruments = _instrument_hints(session, token_set, as_of, domain) if tokens else set()
+    hinted_instruments = _instrument_hints(session, search_tokens, domain) if tokens else set()
     result.instrument_hints = [str(i) for i in hinted_instruments]
     pool = _dedupe(lexical_ids + vector_ids)
     if hinted_instruments:
-        rankings.append([a for a in pool if instrument_of[a] in hinted_instruments])
+        named_pool = [a for a in pool if instrument_of[a] in hinted_instruments]
+        # The user named an approved instrument, but it has no version in force on this date.
+        # Return the identity hint without unrelated passages; the answer layer will report its
+        # scheduled effective date when one exists.
+        if not named_pool:
+            return result
+        named = set(named_pool)
+        rankings = [[article_id for article_id in ranking if article_id in named] for ranking in rankings]
+        rankings = [ranking for ranking in rankings if ranking]
+        rankings.append(named_pool)
+        pool = named_pool
     if result.article_hints:
         stmt = (
             select(Article.id, DocumentVersion.instrument_id)
@@ -249,6 +346,22 @@ def retrieve(
 
     fused = rrf_fuse(rankings, settings.rrf_k)
     top_ids = sorted(fused, key=lambda a: (-fused[a], str(a)))[:top_k]
+    best_lexical = lexical_ids[0] if lexical_ids else None
+    if best_lexical is not None and best_lexical not in top_ids:
+        top_ids.append(best_lexical)
+    # Keep one instruction-like lexical candidate in diagnostics even when it falls just
+    # outside the answer top-k.  It remains quarantined below and can never become evidence,
+    # but retaining it lets the answer disclose that unsafe source text was excluded.
+    quarantined_candidate = next(
+        (
+            article_id
+            for article_id in lexical_ids
+            if INJECTION_PATTERNS.search(best_chunk.get(article_id, ""))
+        ),
+        None,
+    )
+    if quarantined_candidate is not None and quarantined_candidate not in top_ids:
+        top_ids.append(quarantined_candidate)
     if not top_ids:
         return result
 
@@ -272,14 +385,43 @@ def retrieve(
         # official article instead; new imports are clean before chunking.
         if source_url and "uqn.gov.sa" in source_url and len(evidence_text) > len(chunk_text):
             chunk_text = evidence_text
+        # Keep document-kind words (نظام/لائحة/قانون) in title metadata even though
+        # they are intentionally stop words for ordinary passage ranking.  Otherwise
+        # a discovery query such as "قوانين العمل" cannot be satisfied by the title
+        # "نظام العمل".
+        title_tokens = set(lexical_tokens(instrument.official_title_ar, drop_stopwords=False))
+        metadata_tokens = title_tokens | _DOMAIN_QUERY_FORMS.get(instrument.domain, set())
+        passage_concepts = [forms for forms in concepts if not (forms & metadata_tokens)]
         haystack = set(lexical_tokens(f"{article_context(instrument.official_title_ar, article)}\n{evidence_text}"))
-        coverage = len(token_set & haystack) / len(token_set) if token_set else 0.0
+        lexical_matches = _concept_matches(concepts, haystack | metadata_tokens)
+        coverage = lexical_matches / len(concepts) if concepts else 0.0
+        topic_anchor_match = not topic_anchors or any(forms & (haystack | metadata_tokens) for forms in topic_anchors)
+        passage_tokens = best_lexical_tokens.get(article_id, lexical_tokens(chunk_text))
+        # A statute title and its domain establish identity; the local passage must establish
+        # the requested rule.  This lets "عقوبة التستر التجاري" match the penalty article even
+        # though that article refers back to "النظام", while still requiring the penalty words
+        # to occur in the actual passage.
+        passage_token_set = set(passage_tokens)
+        local_concepts = [forms for forms in passage_concepts if forms & passage_token_set]
+        # A compound question may legitimately be answered by separate articles (for
+        # example probation length + annual leave). Require the concepts matched by this
+        # article to be local to one passage, rather than requiring every concept in the
+        # whole multi-part question to occur inside every cited article.
+        concept_window_match = not passage_concepts or _concepts_share_window(
+            local_concepts, passage_tokens, size=64
+        )
         similarity = vector_sims.get(article_id)
         # Source isolation: a passage that addresses the assistant ("ignore previous instructions ...")
         # is never used as evidence, whatever it scores. It stays visible in the trace.
         quarantined = bool(INJECTION_PATTERNS.search(evidence_text))
-        strong = not quarantined and (
-            coverage >= settings.min_lexical_coverage
+        matches_named_instrument = not hinted_instruments or instrument.id in hinted_instruments
+        strong = matches_named_instrument and not quarantined and (
+            (
+                lexical_matches >= settings.min_lexical_matches
+                and coverage >= settings.min_lexical_coverage
+                and topic_anchor_match
+                and concept_window_match
+            )
             or (embedder.is_semantic and similarity is not None and similarity >= settings.min_vector_similarity)
             or (article_id in hinted_articles and bool(hinted_instruments))
         )
@@ -300,12 +442,18 @@ def retrieve(
                 effective_to=version.effective_to,
                 is_test_data=version.is_test_data,
                 rank=rank,
-                rrf_score=fused[article_id],
+                # The exact lexical winner may be retained in addition to the fused top-k
+                # (important for numeric tables).  It can be absent from a filtered RRF
+                # ranking after instrument hints, so use its lexical reciprocal rank safely.
+                rrf_score=fused.get(article_id, 1.0 / (settings.rrf_k + (lexical_rank.get(article_id) or rank))),
                 lexical_rank=lexical_rank.get(article_id),
                 lexical_score=lexical_scores.get(article_id),
                 vector_rank=vector_rank.get(article_id),
                 vector_similarity=similarity,
+                lexical_matches=lexical_matches,
                 lexical_coverage=coverage,
+                topic_anchor_match=topic_anchor_match,
+                concept_window_match=concept_window_match,
                 strong=strong,
                 quarantined=quarantined,
             )

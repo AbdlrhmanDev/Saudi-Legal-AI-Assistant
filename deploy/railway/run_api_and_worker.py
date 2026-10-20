@@ -1,8 +1,8 @@
-"""Run the API and worker in one Railway service.
+"""Run the API and worker in one Railway service (small single-instance deployments only).
 
-Railway volumes belong to one service. Keeping both processes in the same
-service lets the worker read uploads written by the API while still giving the
-HTTP process normal signal handling and health checks.
+Uploads are stored in PostgreSQL, so the API and the worker no longer need a shared volume. For
+1,000+ users deploy them as separate services instead (see deploy/railway/README.md): API replicas
+can then scale without multiplying the scheduler.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ def main() -> int:
                 "0.0.0.0",
                 "--port",
                 port,
+                "--workers",
+                os.environ.get("WEB_CONCURRENCY", "2"),
             ]
         ),
     ]

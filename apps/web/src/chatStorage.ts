@@ -3,6 +3,7 @@ import type { ChatAnswer } from './api'
 export type ChatMessage =
   | { role: 'user'; text: string }
   | { role: 'pending'; asOf: string }
+  | { role: 'streaming'; text: string; asOf: string }
   | { role: 'assistant'; answer: ChatAnswer; latencyMs: number }
   | { role: 'error'; text: string }
 
@@ -15,7 +16,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
 function isSavedMessage(value: unknown): value is ChatMessage {
-  if (!isObject(value) || typeof value.role !== 'string' || value.role === 'pending') return false
+  if (!isObject(value) || typeof value.role !== 'string' || value.role === 'pending' || value.role === 'streaming') return false
   if (value.role === 'user' || value.role === 'error') return typeof value.text === 'string'
   if (value.role !== 'assistant' || !isObject(value.answer)) return false
   const answer = value.answer
@@ -43,7 +44,7 @@ export function loadChatMessages(): ChatMessage[] {
 
 export function saveChatMessages(messages: ChatMessage[]) {
   try {
-    const saved = messages.filter((message) => message.role !== 'pending').slice(-MAX_MESSAGES)
+    const saved = messages.filter((message) => message.role !== 'pending' && message.role !== 'streaming').slice(-MAX_MESSAGES)
     const payload: StoredChat = { version: 1, messages: saved }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
   } catch {

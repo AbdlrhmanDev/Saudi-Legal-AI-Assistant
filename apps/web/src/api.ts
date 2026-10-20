@@ -50,15 +50,66 @@ export async function api<T>(path: string, { method = 'GET', body, form, raw }: 
   return json.data as T
 }
 
+export type ChatStreamEvent =
+  | { type: 'start' }
+  | { type: 'delta'; delta: string }
+  | { type: 'complete'; data: ChatAnswer }
+
+/** Consume the POST NDJSON stream without buffering the full legal answer in the browser. */
+export async function streamChat(
+  body: { query: string; as_of_date?: string; domain?: string },
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  let resp: Response
+  try {
+    resp = await fetch(BASE + '/api/v1/chat/stream', { method: 'POST', headers, body: JSON.stringify(body) })
+  } catch {
+    throw new ApiError(0, 'NETWORK', 'تعذّر الاتصال بالخادم.')
+  }
+  if (!resp.ok) {
+    const json = await resp.json().catch(() => null)
+    const err = json?.error ?? {}
+    throw new ApiError(resp.status, err.code ?? 'HTTP_ERROR', err.message ?? 'حدث خطأ غير متوقع.', err.details ?? {})
+  }
+  if (!resp.body) throw new ApiError(0, 'EMPTY_STREAM', 'لم يُرجع الخادم تدفقًا صالحًا.')
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return
+    const event = JSON.parse(line) as ChatStreamEvent | { type: 'error'; error?: { code?: string; message?: string } }
+    if (event.type === 'error') {
+      throw new ApiError(0, event.error?.code ?? 'STREAM_FAILED', event.error?.message ?? 'تعذّر إكمال الإجابة.')
+    }
+    onEvent(event)
+  }
+
+  for (;;) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) consumeLine(line)
+    if (done) break
+  }
+  if (buffer.trim()) consumeLine(buffer)
+}
+
 export type Page<T> = { items: T[]; pagination: { page: number; limit: number; total: number; totalPages: number } }
 
 export type User = { id: string; email: string; name: string | null; role: 'user' | 'admin' }
 
 export type Citation = {
   law_id: string
+  instrument_id: string
   article_id: string
   version_id: string
   source_url: string | null
+  official_url: string | null
   law_title_ar: string
   article_number: string | null
   article_label: string | null
@@ -79,6 +130,83 @@ export type ChatAnswer = {
   trace_id: string
   disclaimer_ar: string
   forthcoming: { law_title_ar: string; version_id: string; effective_from: string }[]
+  // Freshness contract (absent on answers saved before it existed).
+  corpus_verified_at?: string | null
+  coverage_notice?: string
+  source_health?: SourceHealth
+  // Official transaction links are helpful actions, not evidence for the legal answer.
+  related_services?: RelatedService[]
+}
+
+export type RelatedService = {
+  id: string
+  title_ar: string
+  description_ar: string
+  guidance_ar: string
+  provider_ar: string
+  official_url: string
+  official_info_url: string
+  last_verified_at: string
+  legal_evidence: false
+}
+
+export type SourceHealth = 'healthy' | 'delayed' | 'degraded'
+
+export type Freshness = {
+  corpus_verified_at: string | null
+  last_run: { logical_date: string; status: string; trigger: string; finished_at: string | null } | null
+  source_health: SourceHealth
+  sources: { name: string; authority: string; status: SourceHealth; last_success_at: string | null; last_checked_at: string | null; is_test_data: boolean }[]
+  covered_domains: string[]
+  latest_included_publication: string | null
+  active_generation: { number: number; activated_at: string | null } | null
+  next_scheduled_sync: string
+  timezone: string
+  coverage_notice_ar: string
+  warning_ar: string | null
+}
+
+export type SyncRun = {
+  id: string
+  logical_date_riyadh: string
+  trigger: 'scheduled' | 'catch_up' | 'manual'
+  status: string
+  started_at: string | null
+  finished_at: string | null
+  retry_count: number
+  retry_after: string | null
+  stage_counts: Record<string, Record<string, number | null>>
+  error_code: string | null
+  errors: string[]
+}
+
+export type QuarantineItem = {
+  id: string
+  candidate_id: string
+  candidate_title: string | null
+  classification: string | null
+  canonical_url: string | null
+  reason_code: string
+  detail: string | null
+  created_at: string
+  retry_after: string | null
+  resolution_state: string
+  is_test_data: boolean
+}
+
+export type Generation = {
+  id: string
+  number: number
+  trigger: string
+  validation_status: string
+  is_active: boolean
+  activated_at: string | null
+  version_count: number
+  article_count: number
+  changed_chunk_count: number
+  reused_chunk_count: number
+  health_ok: boolean | null
+  note: string | null
 }
 
 export type Law = {
@@ -160,6 +288,7 @@ export type Candidate = {
   is_test_data: boolean
   affected_article_numbers: string[]
   diff?: { changes: DiffChange[]; warnings: string[] } | null
+  evidence?: { gate?: { outcome: string; reasons: { code: string; detail: string }[] } } | null
 }
 
 export type ReviewEvent = { id: string; decision: string; decision_at: string; reason: string | null }
@@ -209,6 +338,7 @@ export type Stats = {
   last_successful_source_check: string | null
   chat: { requests: number; latency_ms_p50: number | null; latency_ms_p95: number | null }
   worker: { alive: boolean; last_seen_at: string | null }
+  sync: { last_run: SyncRun | null; open_quarantine: number; active_generation: Generation | null }
 }
 
 export type Coverage = { domains: { domain: string; instruments: number; articles: number }[]; notice_ar: string }

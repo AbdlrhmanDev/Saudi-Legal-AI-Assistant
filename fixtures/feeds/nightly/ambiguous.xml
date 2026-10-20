@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEST DATA. A simulated official-gazette feed for the nightly synchronization tests.
+     Nothing here is a real publication. -->
+<rss version="2.0">
+  <channel>
+    <title>نشرة تجريبية للقرارات والأنظمة (بيانات اختبار)</title>
+    <link>https://fixture.invalid/feed</link>
+    <description>Simulated feed for the autonomous nightly synchronization</description>
+    <item>
+      <title>تعديل نظام حماية البيانات الشخصية التجريبي - إشعار</title>
+      <link>https://fixture.invalid/decisions/3001</link>
+      <guid isPermaLink="false">nightly-3001</guid>
+      <pubDate>Sat, 10 Oct 2026 09:00:00 +0300</pubDate>
+      <description>إشعار بصدور تعديل دون إرفاق النص الرسمي. (بيانات اختبار)</description>
+    </item>
+    <item>
+      <title>تعديل المادة الرابعة من نظام حماية البيانات الشخصية التجريبي</title>
+      <link>https://fixture.invalid/decisions/3002</link>
+      <guid isPermaLink="false">nightly-3002</guid>
+      <pubDate>Sat, 10 Oct 2026 10:00:00 +0300</pubDate>
+      <description>قرار تجريبي، ويعمل به اعتباراً من 2026-10-01. (بيانات اختبار)</description>
+      <enclosure url="nightly/pdpl_v1_1_conflicting_dates.txt" type="text/plain" length="0"/>
+    </item>
+    <item>
+      <title>تعديل المادة الخامسة من نظام العمل التجريبي</title>
+      <link>https://fixture.invalid/decisions/3003</link>
+      <guid isPermaLink="false">nightly-3003</guid>
+      <pubDate>Sat, 10 Oct 2026 11:00:00 +0300</pubDate>
+      <description>قرار تجريبي، ويعمل به اعتباراً من 2026-10-10. (بيانات اختبار)</description>
+      <enclosure url="nightly/labor_partial_amendment.txt" type="text/plain" length="0"/>
+    </item>
+    <item>
+      <title>نظام التجارة الإلكترونية التجريبي</title>
+      <link>https://fixture.invalid/laws/2001</link>
+      <guid isPermaLink="false">nightly-2001</guid>
+      <pubDate>Thu, 08 Oct 2026 09:00:00 +0300</pubDate>
+      <description>صدر نظام التجارة الإلكترونية التجريبي. (بيانات اختبار)</description>
+      <enclosure url="nightly/ecommerce_v1.txt" type="text/plain" length="0"/>
+    </item>
+  </channel>
+</rss>

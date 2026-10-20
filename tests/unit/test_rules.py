@@ -7,10 +7,10 @@ import pytest
 from legal_core.answer import _draft_with_validation, _validate
 from legal_core.config import Settings
 from legal_core.embeddings import HashEmbedder
-from legal_core.llm import Draft, Evidence, ExtractiveAnswerModel, build_user_payload
+from legal_core.llm import Draft, Evidence, ExtractiveAnswerModel, build_user_payload, focused_excerpt
 from legal_core.models import DocumentVersion
 from legal_core.monitor import canonicalize_url, classify, content_fingerprint
-from legal_core.retrieval import extract_article_hints, rrf_fuse
+from legal_core.retrieval import _concepts_share_window, _topic_anchors, extract_article_hints, rrf_fuse
 from legal_core.temporal import legal_status
 
 EVIDENCE = [
@@ -43,6 +43,17 @@ def test_rrf_rewards_agreement_between_rankers():
     scores = rrf_fuse([[a, b, c], [b, a], [b]], k=60)
     assert scores[b] > scores[a] > scores[c]
     assert scores[c] == pytest.approx(1 / 63)
+
+
+def test_query_concepts_must_describe_one_local_passage():
+    concepts = [{"شروط"}, {"رخصه", "ترخيص"}, {"بناء"}]
+    assert _concepts_share_window(concepts, ["شروط", "اصدار", "رخصه", "بناء"])
+    assert not _concepts_share_window(concepts, ["شروط", "ترخيص"] + ["كلمه"] * 40 + ["بناء"])
+
+
+def test_absent_paraphrase_word_does_not_veto_exact_topic_terms():
+    concepts = [{"حكم"}, {"تشغيل"}, {"طائره"}]
+    assert _topic_anchors(concepts, [{"تشغيل", "طائره"}]) == [{"تشغيل"}, {"طائره"}]
 
 
 def test_article_hints_from_question():
@@ -119,6 +130,39 @@ def test_extractive_model_quotes_verbatim_and_never_invents():
     assert ExtractiveAnswerModel().draft("س", date(2026, 1, 1), []).answer_status == "insufficient_evidence"
 
 
+def test_extractive_model_returns_only_the_sentence_that_answers_the_question():
+    text = (
+        "تعريفات عامة مطولة عن المناطق الاقتصادية. "
+        "عقوبة التستر التجاري هي الغرامة المحددة في المادة. "
+        "أحكام أخرى لا تتصل بالسؤال."
+    )
+    excerpt = focused_excerpt("وش عقوبة التستر؟", text)
+    assert excerpt == "عقوبة التستر التجاري هي الغرامة المحددة في المادة."
+
+
+def test_extractive_model_returns_the_operational_penalty_clause_for_dialect_question():
+    penalty = Evidence(
+        "E9",
+        "نظام مكافحة التستر",
+        "المادة التاسعة",
+        "9",
+        (
+            "دون إخلال بأي عقوبة ينص عليها أي نظام آخر، يعاقب كل من يرتكب أياً من الجرائم "
+            "المنصوص عليها في النظام بالسجن مدة لا تزيد على خمس سنوات وبغرامة لا تزيد على "
+            "خمسة ملايين ريال أو بإحدى هاتين العقوبتين، على أن يراعى عند تحديد العقوبة حجم النشاط."
+        ),
+        date(2021, 2, 24),
+        None,
+        1.0,
+    )
+    draft = ExtractiveAnswerModel().draft("وش عقوبة التستر التجاري؟", date(2026, 10, 20), [penalty])
+    assert draft.answer_status == "grounded"
+    assert draft.citation_ids == ["E9"]
+    assert "بالسجن مدة لا تزيد على خمس سنوات" in draft.answer_ar
+    assert "خمسة ملايين ريال" in draft.answer_ar
+    assert "حجم النشاط" not in draft.answer_ar
+
+
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
@@ -170,7 +214,61 @@ def test_production_refuses_weak_secrets():
         Settings(environment="production", jwt_secret="dev-only-change-me").assert_safe_for_environment()
     with pytest.raises(RuntimeError):
         Settings(environment="production", jwt_secret="x" * 40, cors_origins="*").assert_safe_for_environment()
-    Settings(environment="production", jwt_secret="x" * 40, cors_origins="https://app.example").assert_safe_for_environment()
+    with pytest.raises(RuntimeError, match="ALLOW_FIXTURE_SOURCES"):
+        Settings(
+            environment="production",
+            jwt_secret="x" * 40,
+            cors_origins="https://app.example",
+            admin_email="admin@private.example",
+            admin_password="a-long-private-password",
+            allow_fixture_sources=True,
+        ).assert_safe_for_environment()
+    with pytest.raises(RuntimeError, match="ADMIN_PASSWORD"):
+        Settings(
+            environment="production",
+            jwt_secret="x" * 40,
+            cors_origins="https://app.example",
+            admin_email="admin@private.example",
+            admin_password="",
+            allow_fixture_sources=False,
+        ).assert_safe_for_environment()
+    with pytest.raises(RuntimeError, match="ADMIN_EMAIL"):
+        Settings(
+            environment="production",
+            jwt_secret="x" * 40,
+            cors_origins="https://app.example",
+            admin_password="a-long-private-password",
+            allow_fixture_sources=False,
+        ).assert_safe_for_environment()
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        Settings(
+            environment="production",
+            jwt_secret="x" * 40,
+            cors_origins="http://app.example",
+            admin_email="admin@private.example",
+            admin_password="a-long-private-password",
+            allow_fixture_sources=False,
+        ).assert_safe_for_environment()
+    with pytest.raises(RuntimeError, match="semantic retrieval"):
+        Settings(
+            environment="production",
+            jwt_secret="x" * 40,
+            cors_origins="https://app.example",
+            admin_email="admin@private.example",
+            admin_password="a-long-private-password",
+            allow_fixture_sources=False,
+        ).assert_safe_for_environment()
+    Settings(
+        environment="production",
+        jwt_secret="x" * 40,
+        cors_origins="https://app.example",
+        admin_email="admin@private.example",
+        admin_password="a-long-private-password",
+        allow_fixture_sources=False,
+        embedding_provider="openai",
+        llm_provider="openai",
+        openai_api_key="test-key",
+    ).assert_safe_for_environment()
 
 
 @pytest.mark.parametrize("scheme", ["postgresql://", "postgres://"])

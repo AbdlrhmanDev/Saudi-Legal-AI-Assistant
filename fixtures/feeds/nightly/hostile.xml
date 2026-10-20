@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEST DATA. A simulated official-gazette feed for the nightly synchronization tests.
+     Nothing here is a real publication. -->
+<rss version="2.0">
+  <channel>
+    <title>نشرة تجريبية للقرارات والأنظمة (بيانات اختبار)</title>
+    <link>https://fixture.invalid/feed</link>
+    <description>Simulated feed for the autonomous nightly synchronization</description>
+    <item>
+      <title>تعديل نظام العمل التجريبي - ملحق</title>
+      <link>https://fixture.invalid/decisions/4001</link>
+      <guid isPermaLink="false">nightly-4001</guid>
+      <pubDate>Sun, 11 Oct 2026 09:00:00 +0300</pubDate>
+      <description>ملحق تجريبي، ويعمل به اعتباراً من 2026-10-11. (بيانات اختبار - محتوى عدائي)</description>
+      <enclosure url="nightly/hostile_amendment.pdf" type="application/pdf" length="0"/>
+    </item>
+  </channel>
+</rss>

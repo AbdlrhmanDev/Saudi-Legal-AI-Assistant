@@ -40,6 +40,11 @@ def configure(*, offline_models: bool = True) -> None:
             "ALLOW_FIXTURE_SOURCES": "true",
             "RATE_LIMIT_CHAT_PER_MINUTE": "1000",
             "RATE_LIMIT_LOGIN_PER_MINUTE": "1000",
+            "FETCH_MIN_INTERVAL_SECONDS": "0",
+            "SYNC_RETRY_BACKOFF_SECONDS": "0",
+            # Caches are exercised by dedicated tests; elsewhere every call must hit the database.
+            "ANSWER_CACHE_SIZE": "0",
+            "FRESHNESS_CACHE_SECONDS": "0",
         }
     )
     if offline_models:

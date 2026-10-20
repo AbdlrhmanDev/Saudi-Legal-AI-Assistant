@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-13T20:18:07+00:00",
+  "generated_at": "2026-10-19T22:18:51+00:00",
   "corpus": "FICTIONAL fixture corpus (test data) - not the official pilot corpus",
   "providers": {
     "embedding_model": "hash-ngram-1536",
@@ -61,9 +61,9 @@
     "temporal": true
   },
   "latency_ms": {
-    "p50": 16.0,
-    "p95": 22,
-    "max": 26
+    "p50": 17.5,
+    "p95": 29,
+    "max": 38
   },
   "failures": [
     {
@@ -103,13 +103,13 @@
       "cited": [],
       "gold_recalled": 1,
       "citations_correct": 0,
-      "latency_ms": 15,
+      "latency_ms": 17,
       "passed": false,
       "problems": [
         "abstained on an answerable question",
         "missing expected text: اليوم السابع"
       ],
-      "trace_id": "2ac828ca-2e12-4348-bc9e-086a0d7df858"
+      "trace_id": "3a116870-2314-41d8-a50f-c2ef1a460f5e"
     }
   ],
   "cases": [
@@ -155,10 +155,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 22,
+      "latency_ms": 38,
       "passed": true,
       "problems": [],
-      "trace_id": "c8d281a1-1624-4673-a398-36e1e03e8a1a"
+      "trace_id": "52181a76-d263-4c22-a91a-8cbbc86742a8"
     },
     {
       "id": "D02",
@@ -202,10 +202,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 13,
+      "latency_ms": 29,
       "passed": true,
       "problems": [],
-      "trace_id": "cd9671a8-a864-4166-a33f-91118b4ace1a"
+      "trace_id": "5bba5102-40b8-4865-b1ec-c716158c12ae"
     },
     {
       "id": "D03",
@@ -249,10 +249,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 13,
+      "latency_ms": 26,
       "passed": true,
       "problems": [],
-      "trace_id": "30a9bdac-d5bc-416f-89d9-394fd9eef840"
+      "trace_id": "0fbc86fa-be1d-4e67-8aef-2c385f64d9ad"
     },
     {
       "id": "D04",
@@ -296,10 +296,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 13,
+      "latency_ms": 27,
       "passed": true,
       "problems": [],
-      "trace_id": "4eb16cc5-87ec-4285-af47-bed670022c28"
+      "trace_id": "ba393791-04d4-488b-affd-0879d662f162"
     },
     {
       "id": "D05",
@@ -343,10 +343,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 17,
+      "latency_ms": 25,
       "passed": true,
       "problems": [],
-      "trace_id": "daab43be-5dad-4cce-995a-b3e9de34ec82"
+      "trace_id": "315ffea0-e3a2-4fdd-bffd-16d54de46c97"
     },
     {
       "id": "D06",
@@ -390,10 +390,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 19,
+      "latency_ms": 31,
       "passed": true,
       "problems": [],
-      "trace_id": "a362e850-7353-4c17-a648-9ef4a8147c21"
+      "trace_id": "8d0ec073-a4f3-4ab5-80ba-863ff6ebf0cd"
     },
     {
       "id": "D07",
@@ -437,10 +437,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 13,
+      "latency_ms": 21,
       "passed": true,
       "problems": [],
-      "trace_id": "141e5188-e5ba-47d4-8e7e-85c483700e7f"
+      "trace_id": "eab9b66c-e382-455b-a473-627e3dcd4790"
     },
     {
       "id": "D08",
@@ -484,10 +484,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 14,
+      "latency_ms": 21,
       "passed": true,
       "problems": [],
-      "trace_id": "cc8cb6e6-fa82-4613-ae49-d8535be9d5b1"
+      "trace_id": "cbe161a9-5964-4b57-a250-ea70baf5d925"
     },
     {
       "id": "D09",
@@ -531,10 +531,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 19,
+      "latency_ms": 23,
       "passed": true,
       "problems": [],
-      "trace_id": "ff8d2e3d-442e-434d-95ad-8bbf84542375"
+      "trace_id": "887b3e87-5cb2-4719-974b-75ed85974e22"
     },
     {
       "id": "D10",
@@ -578,10 +578,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 20,
+      "latency_ms": 21,
       "passed": true,
       "problems": [],
-      "trace_id": "bebb52ab-be41-45d0-9627-7f99fee56075"
+      "trace_id": "28ccfcdf-4cee-4956-8685-46beddc7e5f5"
     },
     {
       "id": "P01",
@@ -605,12 +605,12 @@
           "5"
         ],
         [
-          "notice",
-          "1"
-        ],
-        [
           "labor",
           "7"
+        ],
+        [
+          "notice",
+          "1"
         ],
         [
           "labor",
@@ -625,10 +625,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 21,
+      "latency_ms": 25,
       "passed": true,
       "problems": [],
-      "trace_id": "3d786d0f-1838-495a-ae3a-d82c1d0ab261"
+      "trace_id": "69c47fa3-b8ac-465c-963b-37929819d5a7"
     },
     {
       "id": "P02",
@@ -667,13 +667,13 @@
       "cited": [],
       "gold_recalled": 1,
       "citations_correct": 0,
-      "latency_ms": 15,
+      "latency_ms": 17,
       "passed": false,
       "problems": [
         "abstained on an answerable question",
         "missing expected text: اليوم السابع"
       ],
-      "trace_id": "2ac828ca-2e12-4348-bc9e-086a0d7df858"
+      "trace_id": "3a116870-2314-41d8-a50f-c2ef1a460f5e"
     },
     {
       "id": "P03",
@@ -717,10 +717,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 15,
+      "latency_ms": 20,
       "passed": true,
       "problems": [],
-      "trace_id": "c5a13ac9-5909-4284-bb36-448ca103a2ec"
+      "trace_id": "4aaf662c-15e2-426b-9151-e4865f30a879"
     },
     {
       "id": "P04",
@@ -764,10 +764,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 16,
+      "latency_ms": 17,
       "passed": true,
       "problems": [],
-      "trace_id": "e7351785-8963-48aa-8722-cf1e5f67c64b"
+      "trace_id": "f1529ada-fd89-45d4-b314-66c7ce25b308"
     },
     {
       "id": "P05",
@@ -811,10 +811,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 15,
+      "latency_ms": 18,
       "passed": true,
       "problems": [],
-      "trace_id": "2eecbc65-3bae-4b23-9ef5-f442ff7e1599"
+      "trace_id": "c87049d0-e7b1-4323-a17b-01e0b3a744f7"
     },
     {
       "id": "P06",
@@ -858,10 +858,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 13,
+      "latency_ms": 19,
       "passed": true,
       "problems": [],
-      "trace_id": "b4e08c8e-9634-4cda-b2c3-f1d7bff1951a"
+      "trace_id": "8d0578e7-d8cf-4cb9-a37f-b3500799caae"
     },
     {
       "id": "M01",
@@ -909,10 +909,10 @@
       ],
       "gold_recalled": 2,
       "citations_correct": 1,
-      "latency_ms": 18,
+      "latency_ms": 19,
       "passed": true,
       "problems": [],
-      "trace_id": "e07c0a8f-56d1-4d2a-ae23-b14b98eb67f9"
+      "trace_id": "45a5dc4a-9957-4fc8-933b-3f7715e96001"
     },
     {
       "id": "M02",
@@ -964,10 +964,10 @@
       ],
       "gold_recalled": 2,
       "citations_correct": 2,
-      "latency_ms": 26,
+      "latency_ms": 19,
       "passed": true,
       "problems": [],
-      "trace_id": "11608f62-98b5-4dfc-8b94-495e27331b6a"
+      "trace_id": "3360ec7c-c9d8-499c-b049-efcf190d15d9"
     },
     {
       "id": "M03",
@@ -1019,10 +1019,10 @@
       ],
       "gold_recalled": 2,
       "citations_correct": 2,
-      "latency_ms": 25,
+      "latency_ms": 21,
       "passed": true,
       "problems": [],
-      "trace_id": "405fb816-8ae5-4d27-9fdf-2f3c6a7399bf"
+      "trace_id": "32074e01-25e7-4fe0-8656-b7de1e48f07e"
     },
     {
       "id": "O01",
@@ -1056,10 +1056,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 20,
+      "latency_ms": 14,
       "passed": true,
       "problems": [],
-      "trace_id": "7b2ee511-04b8-462c-8e5c-8be432c33a09"
+      "trace_id": "3a3da27b-2b01-4b79-96f6-4fd803c18200"
     },
     {
       "id": "O02",
@@ -1093,10 +1093,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 19,
+      "latency_ms": 15,
       "passed": true,
       "problems": [],
-      "trace_id": "8e8a19f3-df28-43e4-97f9-c7c625646385"
+      "trace_id": "21ee487d-795d-4c6a-a072-652fa28eac2e"
     },
     {
       "id": "O03",
@@ -1130,10 +1130,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 17,
+      "latency_ms": 15,
       "passed": true,
       "problems": [],
-      "trace_id": "f7820df5-e80c-4cd8-a67e-56b1d887c5d6"
+      "trace_id": "795482b2-1b60-4604-a206-e07d4fbdf7f1"
     },
     {
       "id": "O04",
@@ -1170,7 +1170,7 @@
       "latency_ms": 15,
       "passed": true,
       "problems": [],
-      "trace_id": "fb85b946-0f34-44a9-af9f-55cabd55f79e"
+      "trace_id": "1c21f29f-9bb2-47fa-aeac-1cee248bafce"
     },
     {
       "id": "O05",
@@ -1204,10 +1204,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 15,
+      "latency_ms": 16,
       "passed": true,
       "problems": [],
-      "trace_id": "ea3deabc-f431-4cc8-b48f-610f6b85a9c1"
+      "trace_id": "8510838d-8c72-4fb2-bb4b-371fe70762ab"
     },
     {
       "id": "T01",
@@ -1251,10 +1251,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 22,
+      "latency_ms": 17,
       "passed": true,
       "problems": [],
-      "trace_id": "0a9ffe20-d120-4b6b-9d4f-c5727347e21d"
+      "trace_id": "0496946d-d8c1-45a8-9f28-c16a2d04f3e1"
     },
     {
       "id": "T02",
@@ -1301,7 +1301,7 @@
       "latency_ms": 17,
       "passed": true,
       "problems": [],
-      "trace_id": "2eeadc73-b2b4-4d4f-9bcd-a769d561fa7a"
+      "trace_id": "92f1be08-2ce9-42d3-980c-470a90e507f4"
     },
     {
       "id": "T03",
@@ -1348,7 +1348,7 @@
       "latency_ms": 17,
       "passed": true,
       "problems": [],
-      "trace_id": "0aa063c0-87f6-459e-b1e9-e31d9a176676"
+      "trace_id": "2a2ccb4b-d0e7-4937-979f-48f40afd9e62"
     },
     {
       "id": "T04",
@@ -1361,10 +1361,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 9,
+      "latency_ms": 12,
       "passed": true,
       "problems": [],
-      "trace_id": "b4c26b75-c9e0-4cc1-91f1-bc5f39f4c2bb"
+      "trace_id": "7ff29963-fdd7-420a-8ab4-1f190f21297a"
     },
     {
       "id": "T05",
@@ -1408,10 +1408,10 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 18,
+      "latency_ms": 17,
       "passed": true,
       "problems": [],
-      "trace_id": "1ee46642-c411-4904-b430-754d15307486"
+      "trace_id": "064d9ea1-deaa-4108-abd6-b9e6d19849eb"
     },
     {
       "id": "A01",
@@ -1450,10 +1450,10 @@
       "cited": [],
       "gold_recalled": 1,
       "citations_correct": 0,
-      "latency_ms": 14,
+      "latency_ms": 16,
       "passed": true,
       "problems": [],
-      "trace_id": "5227a20a-27c9-4e05-8401-9bb30e07637e"
+      "trace_id": "7d63ab67-0cf6-41e4-93b5-adf0ece67247"
     },
     {
       "id": "A02",
@@ -1500,7 +1500,7 @@
       "latency_ms": 16,
       "passed": true,
       "problems": [],
-      "trace_id": "1d2ad91a-b1e5-453a-abed-d996986f64bc"
+      "trace_id": "c4d18818-faab-4055-90f6-b537c5f92f0e"
     },
     {
       "id": "A03",
@@ -1544,17 +1544,17 @@
       ],
       "gold_recalled": 1,
       "citations_correct": 1,
-      "latency_ms": 14,
+      "latency_ms": 16,
       "passed": true,
       "problems": [],
-      "trace_id": "6b6df759-a304-4cc2-8ba6-9aebd4b362cf"
+      "trace_id": "8f826e98-1f7b-4095-87cb-830637adcbf6"
     },
     {
       "id": "G01",
       "class": "ambiguous",
       "query": "ما المدة؟",
       "as_of_date": "2026-10-12",
-      "answer_status": "partial",
+      "answer_status": "insufficient_evidence",
       "gold": [],
       "retrieved_top5": [
         [
@@ -1578,22 +1578,13 @@
           "5"
         ]
       ],
-      "cited": [
-        [
-          "pdpl",
-          "10"
-        ],
-        [
-          "companies",
-          "4"
-        ]
-      ],
+      "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 14,
+      "latency_ms": 15,
       "passed": true,
       "problems": [],
-      "trace_id": "ad15842c-19ba-471b-89e4-87cd77fef74a"
+      "trace_id": "46c1e89a-9f89-4106-8ca5-abc35b547f76"
     },
     {
       "id": "G02",
@@ -1627,10 +1618,10 @@
       "cited": [],
       "gold_recalled": 0,
       "citations_correct": 0,
-      "latency_ms": 13,
+      "latency_ms": 15,
       "passed": true,
       "problems": [],
-      "trace_id": "de6df7c5-ab00-4f78-bef5-a00e3ebbe7fd"
+      "trace_id": "7c61ea1b-cc5c-465f-a433-69b12f614927"
     }
   ],
   "notes": [

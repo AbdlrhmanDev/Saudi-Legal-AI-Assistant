@@ -1,13 +1,17 @@
 from datetime import date, datetime
 
 from legal_core.models import (
+    AmendmentRelation,
     Article,
     DocumentVersion,
+    IndexGeneration,
     IngestionJob,
     LegalInstrument,
+    QuarantineEvent,
     QueryTrace,
     ReviewEvent,
     SourceRegistry,
+    SyncRun,
     UpdateCandidate,
     User,
 )
@@ -116,6 +120,8 @@ def candidate(c: UpdateCandidate, *, detail: bool = False) -> dict:
     if detail:
         data["summary"] = c.summary
         data["diff"] = c.diff
+        data["evidence"] = c.evidence
+        data["sync_run_id"] = _id(c.sync_run_id)
     return data
 
 
@@ -130,6 +136,7 @@ def review_event(e: ReviewEvent) -> dict:
         "reason": e.reason,
         "effective_date_evidence": e.effective_date_evidence,
         "details": e.details,
+        "sync_run_id": _id(e.sync_run_id),
     }
 
 
@@ -192,3 +199,86 @@ def trace(t: QueryTrace, *, detail: bool = False) -> dict:
             }
         )
     return data
+
+
+def sync_run(r: SyncRun) -> dict:
+    return {
+        "id": str(r.id),
+        "run_key": r.run_key,
+        "logical_date_riyadh": _iso(r.logical_date_riyadh),
+        "trigger": r.trigger,
+        "status": r.status,
+        "scheduled_at": _iso(r.scheduled_at),
+        "started_at": _iso(r.started_at),
+        "finished_at": _iso(r.finished_at),
+        "retry_count": r.retry_count,
+        "retry_after": _iso(r.retry_after),
+        "stage_counts": r.stage_counts,
+        "error_code": r.error_code,
+        "errors": r.errors,
+    }
+
+
+def generation(g: IndexGeneration, *, detail: bool = False) -> dict:
+    data = {
+        "id": str(g.id),
+        "number": g.number,
+        "trigger": g.trigger,
+        "validation_status": g.validation_status,
+        "is_active": g.is_active,
+        "built_at": _iso(g.built_at),
+        "activated_at": _iso(g.activated_at),
+        "retired_at": _iso(g.retired_at),
+        "parent_id": _id(g.parent_id),
+        "sync_run_id": _id(g.sync_run_id),
+        "version_count": g.version_count,
+        "article_count": g.article_count,
+        "changed_chunk_count": g.changed_chunk_count,
+        "reused_chunk_count": g.reused_chunk_count,
+        "health_ok": bool(g.health.get("ok")) if g.health else None,
+        "note": g.note,
+    }
+    if detail:
+        data.update({"health": g.health, "manifest": g.manifest})
+    return data
+
+
+def quarantine(q: QuarantineEvent) -> dict:
+    c = q.candidate
+    return {
+        "id": str(q.id),
+        "candidate_id": str(q.candidate_id),
+        "candidate_title": c.title if c else None,
+        "classification": c.classification if c else None,
+        "canonical_url": c.canonical_url if c else None,
+        "sync_run_id": _id(q.sync_run_id),
+        "version_id": _id(q.version_id),
+        "source_snapshot_id": _id(q.source_snapshot_id),
+        "reason_code": q.reason_code,
+        "detail": q.detail,
+        "source_evidence": q.source_evidence,
+        "created_at": _iso(q.created_at),
+        "retry_after": _iso(q.retry_after),
+        "resolution_state": q.resolution_state,
+        "resolved_at": _iso(q.resolved_at),
+        "is_test_data": c.is_test_data if c else False,
+    }
+
+
+def amendment(a: AmendmentRelation, target: LegalInstrument, version: DocumentVersion, as_of: date) -> dict:
+    return {
+        "id": str(a.id),
+        "change_type": a.change_type,
+        "law_id": str(target.id),
+        "law_title_ar": target.official_title_ar,
+        "affected_article_number": a.affected_article_number,
+        "version_id": str(version.id),
+        "effective_from": _iso(a.effective_from),
+        "legal_status": "repealed_from" if a.change_type == "repealed" else legal_status(version, as_of),
+        "published_at": _iso(version.published_at),
+        "source_url": version.source_url,
+        "publication_evidence": a.publication_evidence,
+        "date_evidence": a.date_evidence,
+        "recorded_at": _iso(a.created_at),
+        "is_test_data": version.is_test_data,
+    }

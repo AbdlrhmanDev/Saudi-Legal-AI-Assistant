@@ -17,27 +17,34 @@ from api.schemas import (
     Classification,
     DocumentMetadataPatch,
     Domain,
+    IndexRollbackRequest,
     RejectRequest,
     RollbackRequest,
     SourcePatch,
     SyncRequest,
     UpdateCandidatePatch,
 )
-from legal_core.answer import today_riyadh
+from legal_core.answer import answer_cache, today_riyadh
+from legal_core.freshness import clear_cache, freshness_report
 from legal_core.ingestion import IngestionError, _metadata_gaps, validate_source_url
-from legal_core.jobs import enqueue, save_upload
+from legal_core.jobs import enqueue
 from legal_core.models import (
     CANDIDATE_STATES,
     INSTRUMENT_TYPES,
     JOB_STATUSES,
     JOB_TYPES,
+    QUARANTINE_RESOLUTIONS,
     REVIEW_STATUSES,
+    SYNC_STATUSES,
     DocumentVersion,
+    IndexGeneration,
     IngestionJob,
     LegalInstrument,
+    QuarantineEvent,
     QueryTrace,
     ReviewEvent,
     SourceRegistry,
+    SyncRun,
     UpdateCandidate,
     WorkerHeartbeat,
     utcnow,
@@ -45,12 +52,16 @@ from legal_core.models import (
 from legal_core.normalize import normalize_ar
 from legal_core.parser import ExtractionError, sniff_kind
 from legal_core.review import (
+    APPROVABLE_STATES,
     ReviewError,
     approve_candidate,
     reject_candidate,
+    rollback_generation,
     rollback_version,
     update_candidate,
 )
+from legal_core.snapshots import store_snapshot
+from legal_core.sync import trigger_manual_run
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -117,8 +128,12 @@ async def upload_document(
             if not content:
                 raise ApiError(422, "VALIDATION_ERROR", "The uploaded file is empty.")
             kind = sniff_kind(content, file.filename, file.content_type)
+            snapshot = store_snapshot(
+                db, content, canonical_url=None, content_type=f"{kind}", is_test_data=is_test_data
+            )
             payload = {
-                "storage_path": save_upload(content, kind, settings),
+                # Immutable snapshot in PostgreSQL: the worker needs no access to this API's disk.
+                "snapshot_id": str(snapshot.id),
                 # Display only; the stored path is server-generated.
                 "filename": Path(file.filename or "").name[:255] or None,
                 "mime_type": file.content_type,
@@ -196,8 +211,8 @@ def patch_document(
     version = db.get(DocumentVersion, version_id)
     if version is None:
         raise ApiError(404, "NOT_FOUND", "Version not found.")
-    if version.review_status != "needs_review" or version.index_active:
-        raise ApiError(409, "IMMUTABLE_VERSION", "Only an unapproved version awaiting review can be edited.")
+    if version.review_status not in APPROVABLE_STATES or version.index_active:
+        raise ApiError(409, "IMMUTABLE_VERSION", "Only an unapproved or quarantined version can be edited.")
     if not body.model_fields_set:
         raise ApiError(422, "VALIDATION_ERROR", "Nothing to update.")
 
@@ -337,7 +352,11 @@ def list_updates(
     return ok(page.run(db, stmt, serializers.candidate))
 
 
-@router.post("/updates/sync", status_code=201, summary="Trigger a scan of enabled, allowlisted sources")
+@router.post(
+    "/updates/sync",
+    status_code=201,
+    summary="Discovery-only scan of enabled sources (no publication; see /sync-runs/trigger)",
+)
 def sync_updates(db: Db, admin: Admin, body: SyncRequest | None = None) -> dict:
     source_id = body.source_id if body else None
     if source_id and db.get(SourceRegistry, source_id) is None:
@@ -478,6 +497,8 @@ def stats(db: Db, settings: SettingsDep) -> dict:
         )
     ).one()
     heartbeat = db.scalar(select(func.max(WorkerHeartbeat.last_seen_at)))
+    last_run = db.scalars(select(SyncRun).order_by(SyncRun.started_at.desc().nulls_last())).first()
+    generation = db.scalars(select(IndexGeneration).where(IndexGeneration.is_active.is_(True))).first()
     failed_jobs = db.scalars(
         select(IngestionJob).where(IngestionJob.status == "failed").order_by(IngestionJob.created_at.desc()).limit(5)
     ).all()
@@ -504,8 +525,112 @@ def stats(db: Db, settings: SettingsDep) -> dict:
                 "last_seen_at": heartbeat,
                 "alive": bool(heartbeat and (utcnow() - heartbeat).total_seconds() <= settings.worker_stale_seconds),
             },
+            "sync": {
+                "last_run": serializers.sync_run(last_run) if last_run else None,
+                "runs_by_status": grouped(SyncRun.status, SyncRun),
+                "open_quarantine": db.scalar(
+                    select(func.count(func.distinct(QuarantineEvent.candidate_id))).where(
+                        QuarantineEvent.resolution_state == "open"
+                    )
+                ),
+                "active_generation": serializers.generation(generation) if generation else None,
+            },
         }
     )
+
+
+# --- autonomous synchronization (PRD v2 section 14) -----------------------------------
+
+
+@router.get("/sync-runs", summary="Nightly synchronization runs: status, stage counts, retries, errors")
+def list_sync_runs(db: Db, page: PageDep, status: Annotated[str | None, Query(max_length=20)] = None) -> dict:
+    _one_of(status, SYNC_STATUSES, "status")
+    stmt = select(SyncRun).order_by(SyncRun.logical_date_riyadh.desc(), SyncRun.started_at.desc().nulls_last())
+    if status:
+        stmt = stmt.where(SyncRun.status == status)
+    return ok(page.run(db, stmt, serializers.sync_run))
+
+
+@router.get("/sync-runs/{run_id}", summary="One run with its candidates, quarantines and audit events")
+def get_sync_run(run_id: uuid.UUID, db: Db) -> dict:
+    run = db.get(SyncRun, run_id)
+    if run is None:
+        raise ApiError(404, "NOT_FOUND", "Sync run not found.")
+    candidates = db.scalars(
+        select(UpdateCandidate).where(UpdateCandidate.sync_run_id == run.id).order_by(UpdateCandidate.discovered_at)
+    ).all()
+    quarantined = db.scalars(select(QuarantineEvent).where(QuarantineEvent.sync_run_id == run.id)).all()
+    events = db.scalars(
+        select(ReviewEvent).where(ReviewEvent.sync_run_id == run.id).order_by(ReviewEvent.decision_at)
+    ).all()
+    generations = db.scalars(select(IndexGeneration).where(IndexGeneration.sync_run_id == run.id)).all()
+    return ok(
+        {
+            "run": serializers.sync_run(run),
+            "candidates": [serializers.candidate(c) for c in candidates],
+            "quarantine": [serializers.quarantine(q) for q in quarantined],
+            "audit_events": [serializers.review_event(e) for e in events],
+            "generations": [serializers.generation(g) for g in generations],
+        }
+    )
+
+
+@router.post(
+    "/sync-runs/trigger",
+    status_code=201,
+    summary="Run the full synchronization now (same pipeline as midnight, idempotent)",
+    description="For tests and recovery. Routine operation needs no manual trigger.",
+)
+def trigger_sync(db: Db, admin: Admin, settings: SettingsDep) -> dict:
+    run = trigger_manual_run(db, settings, admin.id)
+    job = enqueue(db, "nightly_sync", {"run_id": str(run.id)}, admin.id)
+    return ok({"run": serializers.sync_run(run), "job_id": str(job.id)}, "Synchronization queued.")
+
+
+@router.get("/quarantine", summary="Candidates the release gate refused to publish, with reason codes")
+def list_quarantine(
+    db: Db,
+    page: PageDep,
+    resolution_state: Annotated[str | None, Query(max_length=20)] = "open",
+    reason_code: Annotated[str | None, Query(max_length=60)] = None,
+) -> dict:
+    _one_of(resolution_state, QUARANTINE_RESOLUTIONS, "resolution_state")
+    stmt = select(QuarantineEvent).order_by(QuarantineEvent.created_at.desc())
+    if resolution_state:
+        stmt = stmt.where(QuarantineEvent.resolution_state == resolution_state)
+    if reason_code:
+        stmt = stmt.where(QuarantineEvent.reason_code == reason_code)
+    return ok(page.run(db, stmt, serializers.quarantine))
+
+
+@router.get("/index/generations", summary="Validated retrieval generations, newest first")
+def list_generations(db: Db, page: PageDep) -> dict:
+    return ok(page.run(db, select(IndexGeneration).order_by(IndexGeneration.number.desc()), serializers.generation))
+
+
+@router.get("/index/generations/{generation_id}", summary="One generation with its health report and manifest")
+def get_generation(generation_id: uuid.UUID, db: Db) -> dict:
+    generation = db.get(IndexGeneration, generation_id)
+    if generation is None:
+        raise ApiError(404, "NOT_FOUND", "Generation not found.")
+    return ok(serializers.generation(generation, detail=True))
+
+
+@router.post("/index/rollback", summary="Restore the previous (or a chosen) validated retrieval generation")
+def rollback_index(body: IndexRollbackRequest, db: Db, admin: Admin) -> dict:
+    generation = _review(
+        lambda: rollback_generation(
+            db, actor_id=admin.id, reason=body.reason, target_generation_id=body.target_generation_id
+        )
+    )
+    clear_cache()
+    answer_cache.clear()
+    return ok(serializers.generation(generation), f"Generation {generation.number} is now active.")
+
+
+@router.get("/freshness", summary="Freshness report computed now (uncached)")
+def admin_freshness(db: Db, settings: SettingsDep) -> dict:
+    return ok(freshness_report(db, settings))
 
 
 @router.get("/evaluation", summary="Latest measured evaluation report, if one has been generated")

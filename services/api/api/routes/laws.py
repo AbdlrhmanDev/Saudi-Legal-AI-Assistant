@@ -8,10 +8,11 @@ from fastapi import APIRouter, Query
 from sqlalchemy import exists, func, or_, select
 
 from api import serializers
-from api.deps import ApiError, Db, PageDep, ok
+from api.deps import ApiError, Db, PageDep, SettingsDep, ok
 from api.schemas import Domain
 from legal_core.answer import today_riyadh
-from legal_core.models import Article, DocumentVersion, LegalInstrument
+from legal_core.freshness import cached_freshness
+from legal_core.models import AmendmentRelation, Article, DocumentVersion, LegalInstrument
 from legal_core.normalize import normalize_ar
 from legal_core.temporal import in_force_on
 
@@ -124,3 +125,37 @@ def get_article(article_id: uuid.UUID, db: Db) -> dict:
             "law": serializers.instrument(version.instrument),
         }
     )
+
+
+@router.get(
+    "/freshness",
+    summary="Last verified sync, source health and coverage (shown with every answer)",
+    description=(
+        "`corpus_verified_at` is when the last nightly synchronization finished. It does not mean every "
+        "future amendment is already included; `source_health` and `warning_ar` say when sources are stale."
+    ),
+)
+def freshness(db: Db, settings: SettingsDep) -> dict:
+    return ok(cached_freshness(db, settings))
+
+
+@router.get("/updates", summary="Confirmed legal updates published by the synchronization, newest first")
+def confirmed_updates(db: Db, page: PageDep, law_id: uuid.UUID | None = None, domain: Domain | None = None) -> dict:
+    today = today_riyadh()
+    stmt = (
+        select(AmendmentRelation, LegalInstrument, DocumentVersion)
+        .join(LegalInstrument, AmendmentRelation.target_instrument_id == LegalInstrument.id)
+        .join(DocumentVersion, AmendmentRelation.amending_version_id == DocumentVersion.id)
+        .where(
+            or_(
+                _REVIEWED,
+                DocumentVersion.review_status == "evidence",
+            )
+        )
+        .order_by(AmendmentRelation.created_at.desc(), AmendmentRelation.id)
+    )
+    if law_id:
+        stmt = stmt.where(LegalInstrument.id == law_id)
+    if domain:
+        stmt = stmt.where(LegalInstrument.domain == domain)
+    return ok(page.run(db, stmt, lambda row: serializers.amendment(*row, today), scalars=False))

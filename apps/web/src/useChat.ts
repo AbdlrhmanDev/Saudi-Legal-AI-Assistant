@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { api } from './api'
+import { streamChat } from './api'
 import type { ChatAnswer, Citation } from './api'
 import { clearSavedChat, loadChatMessages, saveChatMessages } from './chatStorage'
 import type { ChatMessage } from './chatStorage'
@@ -13,7 +13,7 @@ export function useChat() {
   const [asOf, setAsOf] = useState(todayIso)
   const [input, setInput] = useState('')
   const [source, setSource] = useState<Citation | null>(null)
-  const busy = messages.some((message) => message.role === 'pending')
+  const busy = messages.some((message) => message.role === 'pending' || message.role === 'streaming')
 
   const send = useCallback(
     async (textArg?: string) => {
@@ -26,17 +26,32 @@ export function useChat() {
       let reply: ChatMessage
 
       try {
-        const answer = await api<ChatAnswer>('/api/v1/chat', {
-          method: 'POST',
-          body: { query: text, as_of_date: asOf, ...(domain !== 'all' ? { domain } : {}) },
+        const completed: { answer?: ChatAnswer } = {}
+        await streamChat({ query: text, as_of_date: asOf, ...(domain !== 'all' ? { domain } : {}) }, (event) => {
+          if (event.type === 'delta') {
+            setMessages((current) =>
+              current.map((message) => {
+                if (message.role === 'pending') return { role: 'streaming', text: event.delta, asOf: message.asOf }
+                if (message.role === 'streaming') return { ...message, text: message.text + event.delta }
+                return message
+              }),
+            )
+          } else if (event.type === 'complete') {
+            completed.answer = event.data
+          }
         })
+        const answer = completed.answer
+        if (!answer) throw new Error('انقطع تدفق الإجابة قبل اكتماله.')
         reply = { role: 'assistant', answer, latencyMs: performance.now() - started }
         if (answer.citations[0] && window.innerWidth >= 1200) setSource(answer.citations[0])
       } catch (error) {
         reply = { role: 'error', text: error instanceof Error ? error.message : 'تعذّر إكمال الطلب.' }
       }
 
-      setMessages((current) => [...current.filter((message) => message.role !== 'pending'), reply])
+      setMessages((current) => [
+        ...current.filter((message) => message.role !== 'pending' && message.role !== 'streaming'),
+        reply,
+      ])
     },
     [asOf, busy, domain, input],
   )

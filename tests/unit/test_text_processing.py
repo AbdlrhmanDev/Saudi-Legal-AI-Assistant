@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from legal_core.chunking import chunk_article
-from legal_core.normalize import detect_language, lexical_tokens, normalize_ar
+from legal_core.normalize import detect_language, lexical_tokens, normalize_ar, query_token_forms
 from legal_core.parser import (
     ExtractionError,
     extract_text,
@@ -27,6 +27,30 @@ def test_normalization_unifies_search_variants():
 def test_light_stemming_matches_attached_particles():
     assert lexical_tokens("والعامل") == lexical_tokens("للعامل") == lexical_tokens("العامل") == ["عامل"]
     assert lexical_tokens("ما هو نظام العمل؟") == ["عمل"]  # question words and generic terms dropped
+
+
+def test_query_forms_bridge_official_legal_titles_and_arabic_nisba():
+    [laws, tourism] = [query_token_forms(t) for t in lexical_tokens("قوانين السياحة")]
+    assert {"قوانين", "نظام", "لايحه"} <= laws
+    assert {"سياحه", "سياحي", "سياحيه"} <= tourism
+
+
+def test_colloquial_request_words_do_not_displace_the_legal_topic():
+    assert lexical_tokens("أبي أعرف وش عقوبة التستر التجاري؟") == ["عقوبه", "تستر", "تجاري"]
+    assert "ترخيص" in query_token_forms("رخصه")
+    assert "متطلبات" in query_token_forms("شروط")
+
+
+def test_saudi_speed_question_maps_to_the_official_table_vocabulary():
+    assert lexical_tokens("كم مخالفة إني زدت 30 عن السرعة؟") == ["مخالفه", "زدت", "30", "سرعه"]
+    assert "تجاوز" in query_token_forms("زدت")
+
+
+def test_decision_boilerplate_is_not_mistaken_for_the_topic_of_construction():
+    assert "بناء" not in lexical_tokens("بناءً على الصلاحيات المخولة")
+    assert "بناء" not in lexical_tokens("إنهاء الالتزامات القائمة بناءً عليه")
+    assert "بناء" not in lexical_tokens("وبناءً على ما تقتضيه المصلحة")
+    assert "بناء" in lexical_tokens("شروط رخصة البناء")
 
 
 def test_language_detection():

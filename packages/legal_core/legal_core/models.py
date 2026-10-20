@@ -4,6 +4,8 @@ Invariants:
 - An article belongs to exactly one document version; article text is never updated.
 - "Current law" is a time-dependent view over versions, never an overwritten row.
 - Only versions with review_status='approved' and index_active are retrievable.
+- Which versions are index_active is decided by the active IndexGeneration; switching
+  generations is one transaction, so readers see either the old or the new corpus.
 """
 
 import uuid
@@ -20,10 +22,13 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -32,20 +37,34 @@ from legal_core.config import get_settings
 
 DOMAINS = ("labor", "commercial", "data_protection", "other")
 INSTRUMENT_TYPES = ("law", "implementing_regulation", "regulation", "guidance", "notice", "draft", "other")
-REVIEW_STATUSES = ("retrieved", "parsed", "needs_review", "approved", "rejected", "failed", "rolled_back")
-CANDIDATE_STATES = ("candidate", "retrieved", "parsed", "needs_review", "approved", "rejected", "failed")
+# "quarantined": blocked by the release gate. "evidence": an official notice kept as proof of a
+# change (e.g. a repeal decision) that is never retrievable as legal text itself.
+REVIEW_STATUSES = (
+    "retrieved", "parsed", "needs_review", "approved", "rejected", "failed", "rolled_back", "quarantined", "evidence"
+)  # fmt: skip
+CANDIDATE_STATES = (
+    "candidate", "retrieved", "parsed", "needs_review", "approved", "rejected", "failed", "quarantined", "excluded"
+)  # fmt: skip
 CLASSIFICATIONS = (
     "new_law",
     "amendment",
+    "repeal",
     "regulation",
     "royal_decree",
     "decision",
     "circular",
     "notice",
+    "draft",
     "irrelevant",
 )
+# Classifications that change binding law and may be published by the release gate.
+PUBLISHABLE_CLASSIFICATIONS = ("new_law", "amendment", "repeal", "regulation")
 CRAWL_POLICIES = ("feed_only", "fetch_allowed", "fixture", "manual")
-JOB_TYPES = ("document_ingest", "feed_sync", "reindex")
+JOB_TYPES = ("document_ingest", "feed_sync", "reindex", "nightly_sync")
+SYNC_TRIGGERS = ("scheduled", "catch_up", "manual")
+SYNC_STATUSES = ("queued", "running", "succeeded", "no_op", "partial", "failed")
+GENERATION_STATUSES = ("building", "active", "retired", "failed")
+QUARANTINE_RESOLUTIONS = ("open", "resolved", "superseded")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed", "duplicate")
 ROLES = ("user", "admin")
 
@@ -159,6 +178,9 @@ class DocumentVersion(Base):
     parse_warnings: Mapped[list] = mapped_column(JSON, default=list)
     is_test_data: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("source_snapshots.id"), index=True)
+    # Evidence the release gate (or a reviewer) relied on: date spans, checks passed.
+    validation_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
 
     instrument: Mapped[LegalInstrument] = relationship(back_populates="versions")
     articles: Mapped[list["Article"]] = relationship(
@@ -208,6 +230,8 @@ class ArticleChunk(Base):
     )
     embedding: Mapped[list[float] | None] = mapped_column(Vector(get_settings().embedding_dim))
     embedding_model: Mapped[str | None] = mapped_column(String(100))
+    # SHA-256 of (model, embedding input): identical text is never embedded twice (PRD v2 10.3).
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
 
     article: Mapped[Article] = relationship(back_populates="chunks")
 
@@ -256,6 +280,11 @@ class UpdateCandidate(Base):
     diff: Mapped[dict | None] = mapped_column(JSON)
     error: Mapped[str | None] = mapped_column(Text)
     is_test_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Where the official text can be fetched (enclosure or page URL); kept so a failed fetch can retry.
+    document_ref: Mapped[str | None] = mapped_column(Text)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"), index=True)
+    # Agent proposal + release-gate outcome (checks, reason codes, evidence spans).
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
 
     source: Mapped[SourceRegistry | None] = relationship()
     target_instrument: Mapped[LegalInstrument | None] = relationship()
@@ -276,6 +305,7 @@ class ReviewEvent(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     effective_date_evidence: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"), index=True)
 
 
 class IngestionJob(Base):
@@ -328,3 +358,144 @@ class WorkerHeartbeat(Base):
 
     worker_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SourceSnapshot(Base):
+    """Immutable raw bytes of a fetched or uploaded document. Stored in PostgreSQL so API and
+    worker processes need no shared volume and can scale independently."""
+
+    __tablename__ = "source_snapshots"
+    __table_args__ = (UniqueConstraint("source_key", "body_checksum", name="uq_snapshots_source_checksum"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("source_registry.id"), index=True)
+    canonical_url: Mapped[str | None] = mapped_column(Text)
+    source_key: Mapped[str] = mapped_column(Text)  # canonical URL, or "upload" for manual uploads
+    body_checksum: Mapped[str] = mapped_column(String(64), index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    byte_size: Mapped[int] = mapped_column(Integer, default=0)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[date | None] = mapped_column(Date)
+    is_test_data: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    @property
+    def raw_storage_uri(self) -> str:
+        return f"db://source_snapshots/{self.id}"
+
+
+class SyncRun(Base):
+    """One logical synchronization. Scheduled and catch-up runs share the key daily:<Riyadh date>,
+    so a calendar day can never get two scheduled runs (PRD v2 section 6)."""
+
+    __tablename__ = "sync_runs"
+    __table_args__ = (
+        CheckConstraint(_in("trigger", SYNC_TRIGGERS), name="ck_sync_runs_trigger"),
+        CheckConstraint(_in("status", SYNC_STATUSES), name="ck_sync_runs_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_key: Mapped[str] = mapped_column(String(80), unique=True)
+    logical_date_riyadh: Mapped[date] = mapped_column(Date, index=True)
+    trigger: Mapped[str] = mapped_column(String(20), default="scheduled")
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stage_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(60))
+    errors: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+
+
+class IndexGeneration(Base):
+    """A validated retrieval snapshot. `manifest` lists the versions it serves and their effective
+    intervals, which is all a rollback needs: chunks of every version are kept."""
+
+    __tablename__ = "index_generations"
+    __table_args__ = (
+        CheckConstraint(_in("validation_status", GENERATION_STATUSES), name="ck_generations_status"),
+        Index("uq_generations_one_active", "is_active", unique=True, postgresql_where=text("is_active")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    number: Mapped[int] = mapped_column(Integer, unique=True)
+    trigger: Mapped[str] = mapped_column(String(30))
+    validation_status: Mapped[str] = mapped_column(String(20), default="building")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("index_generations.id"))
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"), index=True)
+    version_count: Mapped[int] = mapped_column(Integer, default=0)
+    article_count: Mapped[int] = mapped_column(Integer, default=0)
+    changed_chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    reused_chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    health: Mapped[dict] = mapped_column(JSON, default=dict)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class QuarantineEvent(Base):
+    """A candidate the release gate refused to publish, with a machine-readable reason."""
+
+    __tablename__ = "quarantine_events"
+    __table_args__ = (
+        CheckConstraint(_in("resolution_state", QUARANTINE_RESOLUTIONS), name="ck_quarantine_resolution"),
+        Index(
+            "uq_quarantine_one_open_per_candidate",
+            "candidate_id",
+            unique=True,
+            postgresql_where=text("resolution_state = 'open'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("update_candidates.id"), index=True)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"), index=True)
+    source_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("source_snapshots.id"))
+    version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("document_versions.id"))
+    reason_code: Mapped[str] = mapped_column(String(60), index=True)
+    detail: Mapped[str | None] = mapped_column(Text)
+    source_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution_state: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+
+    candidate: Mapped[UpdateCandidate] = relationship()
+
+
+class AmendmentRelation(Base):
+    """Published legal change: which instrument/article changed, how, and on what evidence."""
+
+    __tablename__ = "amendment_relations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    amending_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("document_versions.id"), index=True)
+    target_instrument_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("legal_instruments.id"), index=True)
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("update_candidates.id"))
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"))
+    change_type: Mapped[str] = mapped_column(String(20))  # new_instrument | added | changed | removed | repealed
+    affected_article_number: Mapped[str | None] = mapped_column(String(40))
+    before_article_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("articles.id"))
+    after_article_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("articles.id"))
+    effective_from: Mapped[date | None] = mapped_column(Date)
+    publication_evidence: Mapped[str | None] = mapped_column(Text)
+    date_evidence: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class RateLimitCounter(Base):
+    """Fixed-window request counters shared by every API process (UNLOGGED table)."""
+
+    __tablename__ = "rate_limit_counters"
+    __table_args__ = (PrimaryKeyConstraint("bucket", "window_start", name="pk_rate_limit_counters"),)
+
+    bucket: Mapped[str] = mapped_column(String(200))
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)

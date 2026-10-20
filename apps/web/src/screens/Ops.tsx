@@ -1,10 +1,163 @@
 import { useEffect, useState } from 'react'
 import { ApiError, api, waitForJob } from '../api'
-import type { Evaluation, Job, Page, Ready, Source, Stats, Trace } from '../api'
-import { Pill } from '../ui'
-import { fmtDate, fmtDateTime, shortId } from '../uiData'
+import type { Evaluation, Generation, Job, Page, QuarantineItem, Ready, Source, Stats, SyncRun, Trace } from '../api'
+import { Pill, TestBadge } from '../ui'
+import { CLASS_AR, REASON_AR, fmtDate, fmtDateTime, shortId } from '../uiData'
 
-const JOB_AR: Record<string, string> = { document_ingest: 'استيعاب وثيقة', feed_sync: 'فحص المصادر', reindex: 'إعادة فهرسة' }
+const JOB_AR: Record<string, string> = { document_ingest: 'استيعاب وثيقة', feed_sync: 'فحص المصادر', reindex: 'إعادة فهرسة', nightly_sync: 'مزامنة كاملة' }
+const TRIGGER_AR: Record<string, string> = { scheduled: 'مجدولة 00:00', catch_up: 'تعويض يوم فائت', manual: 'يدوية' }
+const GEN_TRIGGER_AR: Record<string, string> = { nightly_sync: 'مزامنة ليلية', manual_approval: 'اعتماد يدوي', version_rollback: 'تراجع عن إصدار', rollback: 'استعادة إصدار فهرس', bootstrap: 'الإصدار الأولي' }
+const runPill = (status: string) => (status === 'partial' ? 'run_partial' : status)
+
+function runSummary(r: SyncRun): string {
+  const s = r.stage_counts
+  if (r.error_code) return `${r.error_code}${r.errors.length ? ` · ${r.errors[r.errors.length - 1]}` : ''}`
+  const v = s.validate ?? {}
+  const idx = s.index ?? {}
+  return `${s.discover?.new ?? 0} جديد · نُشر ${v.publish ?? 0} · حُجز ${v.quarantine ?? 0} · استُبعد ${v.exclude ?? 0} · تضمينات جديدة ${idx.embedded ?? 0} (أعيد استخدام ${idx.reused ?? 0})`
+}
+
+function NightlySync({ onChanged }: { onChanged: () => void }) {
+  const [runs, setRuns] = useState<SyncRun[]>([])
+  const [quarantine, setQuarantine] = useState<QuarantineItem[]>([])
+  const [generations, setGenerations] = useState<Generation[]>([])
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ text: string; warn: boolean } | null>(null)
+
+  const load = () => {
+    api<Page<SyncRun>>('/api/v1/admin/sync-runs?limit=7').then((p) => setRuns(p.items)).catch(() => undefined)
+    api<Page<QuarantineItem>>('/api/v1/admin/quarantine?limit=8').then((p) => setQuarantine(p.items)).catch(() => undefined)
+    api<Page<Generation>>('/api/v1/admin/index/generations?limit=4').then((p) => setGenerations(p.items)).catch(() => undefined)
+  }
+  // oxlint-disable-next-line react/set-state-in-effect
+  useEffect(load, [])
+
+  const act = async (work: () => Promise<{ text: string; warn: boolean }>) => {
+    setBusy(true)
+    setNote(null)
+    try {
+      setNote(await work())
+    } catch (e) {
+      setNote({ text: e instanceof Error ? e.message : 'تعذّر تنفيذ العملية.', warn: true })
+    } finally {
+      setBusy(false)
+      load()
+      onChanged()
+    }
+  }
+  const runNow = () =>
+    act(async () => {
+      const queued = await api<{ job_id: string; run: SyncRun }>('/api/v1/admin/sync-runs/trigger', { method: 'POST' })
+      const job = await waitForJob(queued.job_id, 600_000)
+      const status = String(job.result.run_status ?? job.status)
+      const stages = (job.result.stage_counts ?? {}) as SyncRun['stage_counts']
+      const discovered = Number(stages.discover?.new ?? 0) + Number(stages.discover?.changed ?? 0)
+      const published = Number(stages.validate?.publish ?? 0)
+      const quarantined = Number(stages.validate?.quarantine ?? 0)
+      const message = discovered === 0
+        ? 'اكتملت المزامنة: لا توجد قوانين أو تحديثات جديدة.'
+        : `اكتملت المزامنة: عُثر على ${discovered} جديد/متغيّر، ونُشر ${published} في RAG، وحُجز ${quarantined} للمراجعة.`
+      return { text: message, warn: status === 'failed' || status === 'partial' }
+    })
+  const rollback = () => {
+    const reason = window.prompt('سبب استعادة إصدار الفهرس السابق (يُسجَّل في سجل التدقيق):')
+    if (!reason || reason.trim().length < 3) return
+    act(async () => {
+      const gen = await api<Generation>('/api/v1/admin/index/rollback', { method: 'POST', body: { reason: reason.trim() } })
+      return { text: `أصبح إصدار الفهرس رقم ${gen.number} هو النشط. لم يُحذف أي نص.`, warn: false }
+    })
+  }
+
+  const panel = { background: '#fff', border: '1px solid #E4E0D6', borderRadius: 10, overflow: 'hidden' } as const
+  const head = { padding: '12px 16px', borderBottom: '1px solid #EEEAE1', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 } as const
+  const row = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '9px 16px', borderBottom: '1px solid #F0ECE3', fontSize: 13 } as const
+  const btn = { whiteSpace: 'nowrap', border: '1px solid #D9D4C8', background: '#fff', borderRadius: 8, padding: '5px 12px', fontSize: 12.5, fontWeight: 600, cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.55 : 1 } as const
+  const active = generations.find((g) => g.is_active)
+
+  return (
+    <>
+      <div style={panel}>
+        <div style={head}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, flex: 1 }}>المزامنة الليلية التلقائية</h2>
+          <span style={{ fontSize: 12, color: '#5E655F' }}>كل يوم 00:00 بتوقيت الرياض · اكتشاف واعتماد وفهرسة RAG تلقائيًا</span>
+          <button onClick={runNow} disabled={busy} style={{ ...btn, color: '#fff', background: '#1F5F4A', borderColor: '#1F5F4A' }}>
+            {busy ? 'جارٍ…' : 'تشغيل المزامنة الآن'}
+          </button>
+        </div>
+        {note && (
+          <div dir="auto" style={{ padding: '8px 16px', fontSize: 12.5, borderBottom: '1px solid #F0ECE3', color: note.warn ? '#8A3A12' : '#1F5F4A', background: note.warn ? '#FBF1EA' : '#EEF6F1' }}>
+            {note.text}
+          </div>
+        )}
+        {runs.length === 0 && <div style={{ padding: '12px 16px', fontSize: 13, color: '#5E655F' }}>لم تُنفَّذ أي مزامنة بعد.</div>}
+        {runs.map((r) => (
+          <div key={r.id} style={row}>
+            <span dir="ltr" className="mono" style={{ fontSize: 12, width: 90 }}>
+              {r.logical_date_riyadh}
+            </span>
+            <Pill k={runPill(r.status)} size={11} dot={false} style={{ padding: '1px 8px' }} />
+            <span style={{ fontSize: 12, color: '#5E655F', whiteSpace: 'nowrap' }}>
+              {TRIGGER_AR[r.trigger] ?? r.trigger}
+              {r.retry_count > 0 ? ` · ${r.retry_count} إعادة محاولة` : ''}
+            </span>
+            <span dir="auto" title={runSummary(r)} style={{ flex: '1 1 260px', minWidth: 0, fontSize: 12, color: r.error_code ? '#8A3A12' : '#3F4541', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {runSummary(r)}
+            </span>
+            <span style={{ fontSize: 11.5, color: '#5E655F', whiteSpace: 'nowrap' }}>{fmtDateTime(r.finished_at ?? r.started_at)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(420px,100%),1fr))', gap: 20 }}>
+        <div style={panel}>
+          <div style={head}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, flex: 1 }}>المحجوز آليًا</h2>
+            <span style={{ fontSize: 12, color: '#5E655F' }}>لم يُنشر لأن أحد الفحوص الحتمية لم ينجح؛ راجعه في «التحديثات»</span>
+          </div>
+          {quarantine.length === 0 && <div style={{ padding: '12px 16px', fontSize: 13, color: '#5E655F' }}>لا توجد عناصر محجوزة.</div>}
+          {quarantine.map((q) => (
+            <div key={q.id} style={{ ...row, flexDirection: 'column', alignItems: 'stretch', gap: 2 }}>
+              <span style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 600 }}>
+                <span dir="auto" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {q.candidate_title ?? shortId(q.candidate_id)}
+                </span>
+                {q.is_test_data && <TestBadge dashed />}
+              </span>
+              <span style={{ fontSize: 12, color: '#8A3A12' }}>{REASON_AR[q.reason_code] ?? q.reason_code}</span>
+              <span style={{ fontSize: 11.5, color: '#5E655F' }}>
+                {CLASS_AR[q.classification ?? ''] ?? q.classification} · {fmtDateTime(q.created_at)}
+                {q.retry_after ? ` · إعادة المحاولة بعد ${fmtDateTime(q.retry_after)}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div style={panel}>
+          <div style={head}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, flex: 1 }}>إصدارات الفهرس</h2>
+            {active && generations.length > 1 && (
+              <button onClick={rollback} disabled={busy} style={{ ...btn, color: '#8A3A12' }}>
+                استعادة الإصدار السابق
+              </button>
+            )}
+          </div>
+          {generations.map((g) => (
+            <div key={g.id} style={row}>
+              <span className="mono" dir="ltr" style={{ fontWeight: 700, width: 36 }}>
+                #{g.number}
+              </span>
+              <Pill k={g.is_active ? 'active' : g.validation_status === 'failed' ? 'failed' : 'superseded'} size={11} dot={false} style={{ padding: '1px 8px' }} />
+              <span style={{ flex: '1 1 200px', fontSize: 12.5 }}>
+                {GEN_TRIGGER_AR[g.trigger] ?? g.trigger} · {g.version_count} إصدار · {g.changed_chunk_count} مقطع جديد / {g.reused_chunk_count} مُعاد استخدامه
+              </span>
+              <span style={{ fontSize: 11.5, color: '#5E655F', whiteSpace: 'nowrap' }}>{fmtDateTime(g.activated_at)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
 const METRIC_AR: [string, string][] = [
   ['recall_at_5', 'استرجاع Recall@5'],
   ['citation_accuracy', 'دقة الاستشهاد'],
@@ -84,11 +237,17 @@ export function Ops() {
   const failing = stats?.sources.filter((s) => s.enabled && s.last_error) ?? []
   const enabled = stats?.sources.filter((s) => s.enabled).length ?? 0
   const p95 = stats?.chat.latency_ms_p95
+  const lastRun = stats?.sync?.last_run ?? null
   const health = [
     { name: 'واجهة API', note: p95 != null ? `p95 ${(p95 / 1000).toFixed(1)}s` : 'لا طلبات بعد', dot: failed ? RED : p95 != null && p95 > 8000 ? AMBER : GREEN },
     { name: 'قاعدة البيانات', note: ready?.checks.pgvector === 'ok' ? 'pgvector' : 'غير متاحة', dot: ready?.checks.database === 'ok' && ready.checks.pgvector === 'ok' ? GREEN : RED },
     { name: 'العامل', note: ready?.checks.worker === 'ok' ? 'يعمل' : 'متوقف', dot: ready?.checks.worker === 'ok' ? GREEN : RED },
     { name: 'مراقب المصادر', note: failing.length ? 'تعذّر الفحص' : enabled ? `${enabled} مصدر مفعّل` : 'لا مصادر مفعّلة', dot: failing.length ? AMBER : enabled ? GREEN : '#A8A69E' },
+    {
+      name: 'المزامنة الليلية',
+      note: lastRun ? `${lastRun.logical_date_riyadh} · ${stats?.sync.open_quarantine ?? 0} محجوز` : 'لم تعمل بعد',
+      dot: !lastRun ? '#A8A69E' : lastRun.status === 'failed' ? RED : lastRun.status === 'partial' ? AMBER : GREEN,
+    },
   ]
 
   const panel = { background: '#fff', border: '1px solid #E4E0D6', borderRadius: 10, overflow: 'hidden' } as const
@@ -113,10 +272,12 @@ export function Ops() {
           ))}
         </div>
 
+        <NightlySync onChanged={loadStats} />
+
         <div style={panel}>
           <div style={panelHead}>
             <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>المصادر الرسمية</h2>
-            <span style={{ fontSize: 12, color: '#5E655F' }}>المصدر المفعّل يُفحص دوريًا، وكل ما يُرصد ينتظر المراجعة في «التحديثات» قبل أن يؤثر في الإجابات.</span>
+            <span style={{ fontSize: 12, color: '#5E655F' }}>المصادر المفعّلة تُزامَن كل ليلة. التغييرات التي تجتاز الفحوص الحتمية تُنشر تلقائيًا، وغير المؤكد منها يُحجز.</span>
           </div>
           {sourceNote && (
             <div dir="auto" style={{ padding: '8px 16px', fontSize: 12.5, borderBottom: '1px solid #F0ECE3', color: sourceNote.warn ? '#8A3A12' : '#1F5F4A', background: sourceNote.warn ? '#FBF1EA' : '#EEF6F1' }}>

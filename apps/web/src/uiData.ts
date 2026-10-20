@@ -18,6 +18,13 @@ const PILLS: Record<string, [string, string, string]> = {
   failed: ['فشلت', '#F8E3E1', '#8E2626'],
   queued: ['في الانتظار', '#FBF0D9', '#7A4F00'],
   running: ['قيد التنفيذ', '#FBF0D9', '#7A4F00'],
+  quarantined: ['محجوز آليًا', '#F8E3E1', '#8E2626'],
+  excluded: ['مستبعد', '#ECEBE6', '#4A4F4C'],
+  no_op: ['لا جديد', '#ECEBE6', '#4A4F4C'],
+  run_partial: ['نجحت جزئيًا', '#FBF0D9', '#7A4F00'],
+  healthy: ['محدّثة', '#E2EFE7', '#17543D'],
+  delayed: ['متأخرة', '#FBF0D9', '#7A4F00'],
+  degraded: ['غير مؤكدة', '#F8E3E1', '#8E2626'],
 }
 const FALLBACK: [string, string, string] = ['—', '#ECEBE6', '#4A4F4C']
 
@@ -68,6 +75,9 @@ export function fmtDate(d: string | null | undefined): string {
   return dateFmt.format(new Date(day + 'T00:00:00'))
 }
 export const fmtDateTime = (d: string | null | undefined) => (d ? timeFmt.format(new Date(d)) : '—')
+// Sync times are stated in Saudi time whatever the viewer's own time zone is.
+const riyadhFmt = new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })
+export const fmtRiyadh = (d: string | null | undefined) => (d ? `${riyadhFmt.format(new Date(d))} (بتوقيت الرياض)` : '—')
 export const shortId = (id: string) => id.slice(0, 8)
 export const todayIso = () => {
   const now = new Date()
@@ -76,7 +86,26 @@ export const todayIso = () => {
 
 export const DOMAIN_AR: Record<string, string> = { labor: 'العمل', commercial: 'الشركات', data_protection: 'حماية البيانات', other: 'أخرى' }
 export const TYPE_AR: Record<string, string> = { law: 'نظام', implementing_regulation: 'لائحة تنفيذية', regulation: 'لائحة', guidance: 'دليل إرشادي', notice: 'تعميم', draft: 'مشروع', other: 'وثيقة' }
-export const CLASS_AR: Record<string, string> = { new_law: 'نظام جديد', amendment: 'تعديل نظام', regulation: 'لائحة أو قواعد', royal_decree: 'أمر أو مرسوم ملكي', decision: 'قرار', circular: 'تعميم', notice: 'إشعار أو إعلان', irrelevant: 'غير ذي صلة' }
+export const CLASS_AR: Record<string, string> = { new_law: 'نظام جديد', amendment: 'تعديل نظام', repeal: 'إلغاء نظام', regulation: 'لائحة أو قواعد', royal_decree: 'أمر أو مرسوم ملكي', decision: 'قرار', circular: 'تعميم', notice: 'إشعار أو إعلان', draft: 'مشروع أو مسودة', irrelevant: 'غير ذي صلة' }
+export const REASON_AR: Record<string, string> = {
+  NO_OFFICIAL_TEXT: 'لا يتوفر نص رسمي قابل للجلب الآلي',
+  SOURCE_UNAVAILABLE: 'تعذّر جلب النص الرسمي؛ ستُعاد المحاولة',
+  NOT_OFFICIAL_SOURCE: 'المصدر غير رسمي أو خارج القائمة المعتمدة',
+  PROMPT_INJECTION_DETECTED: 'يحتوي المستند على تعليمات موجهة لنظام ذكاء اصطناعي',
+  ARTICLE_STRUCTURE_INVALID: 'تعذّر استخراج مواد مرقّمة من النص',
+  CONFLICTING_ARTICLE_NUMBERS: 'أرقام مواد متكررة أو متعارضة',
+  TARGET_UNRESOLVED: 'تعذّر تحديد النظام المعدَّل أو الملغى',
+  AMBIGUOUS_AMENDMENT_MAPPING: 'ربط المواد المعدّلة غير مؤكد (وثيقة تعديل جزئية)',
+  EFFECTIVE_DATE_MISSING: 'لا يوجد تاريخ نفاذ موثّق في النص',
+  CONFLICTING_EFFECTIVE_DATES: 'تواريخ نفاذ متعارضة في المصادر الرسمية',
+  HIJRI_DATE_UNVERIFIED: 'تاريخ النفاذ هجري فقط ولم يُحوَّل آليًا',
+  PUBLICATION_DATE_MISSING: 'النفاذ مرتبط بتاريخ نشر غير معروف',
+  CONFLICTING_EFFECTIVE_VERSION: 'يتعارض مع إصدار معتمد آخر',
+  AGENT_RULES_DISAGREE: 'اختلف تصنيف الوكيل عن القواعد الحتمية',
+  EMBEDDING_BUDGET_EXCEEDED: 'تجاوز حد الفهرسة لهذه الليلة؛ ستُعاد المحاولة',
+  INDEX_HEALTH_FAILED: 'فشل فحص سلامة الفهرس؛ بقي الفهرس السابق',
+  PUBLISH_FAILED: 'تعذّر النشر؛ ستُعاد المحاولة',
+}
 export const WARNING_AR: Record<string, string> = { possible_prompt_injection: 'يحتوي النص على عبارات تبدو تعليمات موجهة للمساعد', possible_partial_amendment_document: 'قد تكون الوثيقة مقتصرة على المواد المعدّلة وليست نصًا موحدًا', no_articles_detected: 'لم تُكتشف مواد مرقّمة في الوثيقة' }
 export const GAP_AR: Record<string, string> = { source_url: 'رابط المصدر', source_url_not_allowlisted: 'المصدر خارج القائمة المعتمدة', issuing_authority: 'الجهة المصدرة', published_at: 'تاريخ النشر', effective_from: 'تاريخ النفاذ' }
 

@@ -38,10 +38,24 @@ _PRONOUN_SUFFIXES = ("هما", "ها")
 STOPWORDS = frozenset(
     """
     في من الي علي عن مع هذا هذه ذلك تلك التي الذي الذين ما ماذا هل كم كيف متي اين لماذا
-    او ان اذا لا لم لن قد كل اي بين عند حتي ثم بعد قبل هو هي هم كان كانت يكون تكون به بها له لها
+    او ان اذا لا لم لن قد كل اي بين عند حتي ثم بعد قبل هو هي هم كان كانت يكون تكون به بها له لها وما
     فيه فيها منه منها عليه عليها غير حسب وفق وفقا بشان حول ينص تنص نص نظام ماده يجوز يجب شيء
+    ايش وش وشو وين ابي ابغي ودي عطني قول اعرف يعني ممكن اقدر يصير اني اننا
     the a an of in on to for and or is are what which how does do under about by with
     """.split()
+)
+
+_LEGAL_DOCUMENT_FORMS = frozenset(
+    {"قانون", "قوانين", "نظام", "انظمه", "لايحه", "لوايح", "تشريع", "تشريعات"}
+)
+
+# Conservative concept aliases bridge ordinary Arabic (including common Saudi phrasing) with
+# formal drafting. They only widen retrieval for the same concept; they never create an answer.
+_CONCEPT_ALIAS_GROUPS = (
+    frozenset({"رخصه", "ترخيص", "تراخيص", "تصريح", "تصاريح"}),
+    frozenset({"عقوبه", "عقوبات", "يعاقب", "جزاء", "جزاءات", "غرامه", "غرامات"}),
+    frozenset({"شرط", "شروط", "اشتراط", "اشتراطات", "متطلب", "متطلبات", "ضابط", "ضوابط"}),
+    frozenset({"زاد", "زياده", "زدت", "تجاوز", "تجاوزت"}),
 )
 
 
@@ -79,7 +93,16 @@ def light_stem(token: str) -> str:
 
 def lexical_tokens(text: str, *, drop_stopwords: bool = True) -> list[str]:
     tokens = []
-    for raw in _TOKEN.findall(normalize_ar(text)):
+    raw_tokens = _TOKEN.findall(normalize_ar(text))
+    for index, raw in enumerate(raw_tokens):
+        # "بناءً على" is ubiquitous decision boilerplate and does not concern
+        # construction. Keep "البناء" elsewhere so questions about building permits work.
+        if (
+            light_stem(raw) == "بناء"
+            and index + 1 < len(raw_tokens)
+            and light_stem(raw_tokens[index + 1]).startswith("علي")
+        ):
+            continue
         if drop_stopwords and raw in STOPWORDS:
             continue
         stem = light_stem(raw)
@@ -87,6 +110,30 @@ def lexical_tokens(text: str, *, drop_stopwords: bool = True) -> list[str]:
             continue
         tokens.append(stem)
     return tokens
+
+
+def query_token_forms(token: str) -> set[str]:
+    """Return conservative retrieval aliases while keeping one semantic concept.
+
+    Official titles and user questions often vary between قانون/نظام/لائحة and between a
+    noun and its nisba adjective (سياحة/سياحي/سياحية). Aliases are not separate score terms.
+    """
+    forms = {token}
+    if token in _LEGAL_DOCUMENT_FORMS:
+        forms.update(_LEGAL_DOCUMENT_FORMS)
+    for aliases in _CONCEPT_ALIAS_GROUPS:
+        if token in aliases:
+            forms.update(aliases)
+    if len(token) >= 5 and token.endswith("يه"):
+        base = token[:-2]
+        forms.update({base + "ه", base + "ي"})
+    elif len(token) >= 4 and token.endswith("ه"):
+        base = token[:-1]
+        forms.update({base + "ي", base + "يه"})
+    elif len(token) >= 4 and token.endswith("ي"):
+        base = token[:-1]
+        forms.update({base + "ه", base + "يه"})
+    return forms
 
 
 def lexical_text(text: str) -> str:

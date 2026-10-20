@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
-import type { ChatAnswer, Citation, Law, Version } from '../api'
+import type { Article, ChatAnswer, Citation, Freshness, Law, Version } from '../api'
 import { Icon, Logo, Pill } from '../ui'
-import { DOT, ICON, fmtDate, pillOf, shortId, todayIso } from '../uiData'
+import { DOT, ICON, fmtDate, fmtRiyadh, pillOf, shortId, todayIso } from '../uiData'
 import type { ChatController } from '../useChat'
 
 const DOMAINS: [string, string][] = [
@@ -25,12 +25,60 @@ const cleanDisplayedLegalText = (text: string) =>
     .map((line) => line.trim())
     .filter((line) => line && !PAGE_CHROME.has(line) && !line.startsWith('جميع الحقوق محفوظة') && !line.startsWith('تاريخ آخر تعديل:') && !/^-+°C$/.test(line))
     .join('\n')
-const compactMessage = (text: string) => cleanDisplayedLegalText(text).replace(/\s+/g, ' ').trim()
 // Citations are rendered as a compact paragraph. Source-page line wrapping must
 // never become artificial gaps in the legal text displayed to the user.
 const compactSource = (text: string) => cleanDisplayedLegalText(text).replace(/\s+/g, ' ').trim()
 
-export function Chat({ chat }: { chat: ChatController }) {
+function AnswerText({ text }: { text: string }) {
+  const lines = cleanDisplayedLegalText(text).split('\n').map((line) => line.trim()).filter(Boolean)
+  const blocks: { kind: 'text' | 'bullet' | 'number'; value: string }[] = lines.map((line) => {
+    const bullet = line.match(/^[-•*]\s+(.+)$/)
+    if (bullet) return { kind: 'bullet', value: bullet[1] }
+    const numbered = line.match(/^\d+[.)-]\s+(.+)$/)
+    if (numbered) return { kind: 'number', value: numbered[1] }
+    return { kind: 'text', value: line }
+  })
+  const rendered: React.ReactNode[] = []
+  for (let index = 0; index < blocks.length;) {
+    const block = blocks[index]
+    if (block.kind === 'text') {
+      rendered.push(<p key={index} style={{ margin: rendered.length ? '10px 0 0' : 0 }}>{block.value}</p>)
+      index += 1
+      continue
+    }
+    const kind = block.kind
+    const items: string[] = []
+    while (index < blocks.length && blocks[index].kind === kind) {
+      items.push(blocks[index].value)
+      index += 1
+    }
+    const List = kind === 'number' ? 'ol' : 'ul'
+    rendered.push(
+      <List key={`${kind}-${index}`} style={{ margin: '10px 0 0', paddingInlineStart: 24, display: 'grid', gap: 6 }}>
+        {items.map((item) => <li key={item}>{item}</li>)}
+      </List>,
+    )
+  }
+  return <div style={{ textAlign: 'start' }}>{rendered}</div>
+}
+
+/** Freshness contract (PRD v2 6.2): when the corpus was last verified and whether sources are current. */
+function FreshnessBar({ freshness }: { freshness: Freshness }) {
+  const healthy = freshness.source_health === 'healthy'
+  return (
+    <div className="pad-x" role="status" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 14px', padding: '8px 28px', fontSize: 12.5, color: healthy ? '#3F4541' : '#5A4210', background: healthy ? '#F3F8F5' : '#FBF5E6', borderBottom: `1px solid ${healthy ? '#DCE9E1' : '#F0DFB5'}` }}>
+      <Pill k={freshness.source_health} size={11.5} />
+      <span>
+        آخر مزامنة موثّقة مع المصادر الرسمية: <strong>{freshness.corpus_verified_at ? fmtRiyadh(freshness.corpus_verified_at) : 'لم تتم بعد'}</strong>
+      </span>
+      {freshness.latest_included_publication && <span>· أحدث نشر رسمي مضمَّن: {fmtDate(freshness.latest_included_publication)}</span>}
+      <span>· المزامنة التالية: {fmtRiyadh(freshness.next_scheduled_sync)}</span>
+      {freshness.warning_ar && <span style={{ flexBasis: '100%', fontWeight: 600 }}>{freshness.warning_ar}</span>}
+    </div>
+  )
+}
+
+export function Chat({ chat, freshness }: { chat: ChatController; freshness: Freshness | null }) {
   const { messages, domain, setDomain, asOf, setAsOf, input, setInput, source, setSource, send, clear, busy } = chat
   const [wide, setWide] = useState(() => window.innerWidth >= 1200)
   const endRef = useRef<HTMLDivElement>(null)
@@ -78,6 +126,7 @@ export function Chat({ chat }: { chat: ChatController }) {
             <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value || todayIso())} style={{ fontSize: 13, fontWeight: 600, padding: '3px 4px', border: 0, background: 'transparent', color: '#1B1F1D', outline: 'none' }} />
           </label>
         </header>
+        {freshness && <FreshnessBar freshness={freshness} />}
 
         <div className="pad-x" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '32px 28px 24px' }}>
           <div aria-live="polite" style={{ maxWidth: 780, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -107,6 +156,16 @@ export function Chat({ chat }: { chat: ChatController }) {
                       </span>
                       جارٍ البحث في النصوص النافذة في {fmtDate(m.asOf)}…
                     </div>
+                  </div>
+                )
+              if (m.role === 'streaming')
+                return (
+                  <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                    <Logo size={30} />
+                    <article style={{ flex: 1, minWidth: 0, background: '#fff', border: '1px solid #E4E0D6', borderRadius: 16, padding: '16px 22px', boxShadow: '0 1px 2px rgba(27,31,29,.04)', fontSize: 16, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>
+                      {m.text}
+                      <span aria-label="جارٍ إكمال الإجابة" style={{ display: 'inline-block', width: 7, height: '1.1em', marginInlineStart: 4, background: '#1F5F4A', verticalAlign: 'text-bottom', animation: 'pulse 1s ease-in-out infinite' }} />
+                    </article>
                   </div>
                 )
               if (m.role === 'error')
@@ -173,15 +232,21 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
       <article style={{ flex: 1, minWidth: 0, background: '#fff', border: '1px solid #E4E0D6', borderRadius: 16, boxShadow: '0 1px 2px rgba(27,31,29,.04),0 8px 24px -12px rgba(27,31,29,.10)', overflow: 'hidden' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: '14px 22px 0' }}>
           <Pill k={answer.answer_status} style={{ padding: '3px 10px' }} />
-          <span style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: '#5E655F' }}>وفق النص النافذ في {fmtDate(answer.as_of_date)}</span>
+          <span style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: '#5E655F' }}>
+            وفق النص النافذ في {fmtDate(answer.as_of_date)}
+          </span>
         </div>
         <div style={{ padding: '14px 22px 4px', fontSize: 16, lineHeight: 1.9, textWrap: 'pretty' }}>
-          <span>{compactMessage(answer.answer_ar)}</span>
-          {answer.citations.map((c, i) => (
-            <button key={c.article_id} onClick={() => onOpen(c)} aria-label={`فتح المصدر ${i + 1}`} style={{ whiteSpace: 'nowrap', border: 0, background: '#1F5F4A', color: '#fff', fontSize: 10.5, fontWeight: 700, borderRadius: '50%', width: 18, height: 18, lineHeight: '18px', padding: 0, margin: '0 3px', cursor: 'pointer', verticalAlign: 'super', display: 'inline-block', textAlign: 'center' }}>
-              {i + 1}
-            </button>
-          ))}
+          <AnswerText text={answer.answer_ar} />
+          {answer.citations.length > 0 && (
+            <span aria-label="مصادر الإجابة" style={{ display: 'inline-flex', gap: 5, marginTop: 10 }}>
+              {answer.citations.map((c, i) => (
+                <button key={c.article_id} onClick={() => onOpen(c)} aria-label={`فتح المصدر ${i + 1}`} style={{ whiteSpace: 'nowrap', border: 0, background: '#1F5F4A', color: '#fff', fontSize: 10.5, fontWeight: 700, borderRadius: '50%', width: 20, height: 20, lineHeight: '20px', padding: 0, cursor: 'pointer', display: 'inline-block', textAlign: 'center' }}>
+                  {i + 1}
+                </button>
+              ))}
+            </span>
+          )}
         </div>
         {answer.citations.length > 0 && (
           <div style={{ padding: '14px 22px 2px' }}>
@@ -194,28 +259,60 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {answer.citations.map((c, i) => {
                 const on = selected?.article_id === c.article_id
+                const fullDecisionUrl = c.official_url ?? c.source_url
                 return (
-                  <button key={c.article_id} onClick={() => onOpen(c)} style={{ display: 'flex', alignItems: 'center', gap: 14, width: '100%', textAlign: 'start', border: `1px solid ${on ? '#A9CDB9' : '#E4E0D6'}`, background: on ? '#F3F8F5' : '#fff', borderRadius: 12, padding: '12px 14px', cursor: 'pointer', color: '#1B1F1D' }}>
-                    <span style={{ width: 28, height: 28, borderRadius: 8, background: '#1F5F4A', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700, flex: 'none' }}>{i + 1}</span>
-                    <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.45 }}>
-                      <span style={{ fontWeight: 600, fontSize: 14.5 }}>
-                        {c.law_title_ar} — {c.article_label ?? 'نص الوثيقة'}
+                  <div key={c.article_id} style={{ display: 'flex', alignItems: 'stretch', border: `1px solid ${on ? '#A9CDB9' : '#E4E0D6'}`, background: on ? '#F3F8F5' : '#fff', borderRadius: 12, overflow: 'hidden' }}>
+                    <button onClick={() => onOpen(c)} style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 1, minWidth: 0, textAlign: 'start', border: 0, background: 'transparent', padding: '12px 14px', cursor: 'pointer', color: '#1B1F1D' }}>
+                      <span style={{ width: 28, height: 28, borderRadius: 8, background: '#1F5F4A', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700, flex: 'none' }}>{i + 1}</span>
+                      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.45 }}>
+                        <span style={{ fontWeight: 600, fontSize: 14.5 }}>
+                          {c.law_title_ar} — {c.article_label ?? 'نص الوثيقة'}
+                        </span>
+                        <span style={{ fontSize: 12.5, color: '#5E655F' }}>
+                          سارية منذ {fmtDate(c.effective_from)}
+                          {c.effective_to ? ` · حتى ${fmtDate(c.effective_to)}` : ''}
+                          {c.is_test_data ? ' · بيانات تجريبية' : ''}
+                        </span>
                       </span>
-                      <span style={{ fontSize: 12.5, color: '#5E655F' }}>
-                        سارية منذ {fmtDate(c.effective_from)}
-                        {c.effective_to ? ` · حتى ${fmtDate(c.effective_to)}` : ''}
-                        {c.is_test_data ? ' · بيانات تجريبية' : ''}
-                      </span>
-                    </span>
-                    <Pill k={c.legal_status} size={11.5} dot={false} />
-                    <span style={{ color: '#5E655F', display: 'flex' }}>
-                      <Icon d={ICON.chevron} />
-                    </span>
-                  </button>
+                      <Pill k={c.legal_status} size={11.5} dot={false} />
+                      <span style={{ color: '#5E655F', display: 'flex' }}><Icon d={ICON.chevron} /></span>
+                    </button>
+                    {fullDecisionUrl && (
+                      <a href={fullDecisionUrl} target="_blank" rel="noopener noreferrer" aria-label={`فتح القرار كاملًا ${i + 1}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, alignSelf: 'center', marginInlineEnd: 12, whiteSpace: 'nowrap', color: '#1F5F4A', fontSize: 12, fontWeight: 700, textDecoration: 'none' }}>
+                        القرار كاملًا <Icon d={ICON.external} size={14} />
+                      </a>
+                    )}
+                  </div>
                 )
               })}
             </div>
           </div>
+        )}
+        {(answer.related_services?.length ?? 0) > 0 && (
+          <section aria-label="خدمات حكومية ذات صلة" style={{ padding: '14px 22px 2px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: '#3F4541', marginBottom: 10 }}>
+              <span style={{ color: '#1F5F4A', display: 'flex' }}><Icon d={ICON.external} size={16} /></span>
+              خدمات حكومية ذات صلة
+              <span style={{ color: '#7A807B', fontWeight: 400 }}>— ليست سندًا للإجابة القانونية</span>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {answer.related_services?.map((service) => (
+                <div key={service.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, border: '1px solid #BFD8C9', background: '#F3F8F5', borderRadius: 12, padding: '12px 14px', color: '#1B1F1D' }}>
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <span style={{ fontSize: 14.5, fontWeight: 700, color: '#17543D' }}>{service.title_ar}</span>
+                    <span style={{ fontSize: 12.5, lineHeight: 1.7, color: '#4F5752' }}>{service.guidance_ar}</span>
+                    <span style={{ fontSize: 11.5, color: '#737A75' }}>{service.provider_ar} · رابط رسمي · تحقق {fmtDate(service.last_verified_at)}</span>
+                  </span>
+                  <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 }}>
+                    <a href={service.official_info_url} target="_blank" rel="noopener noreferrer" style={{ whiteSpace: 'nowrap', color: '#1F5F4A', fontSize: 12, fontWeight: 600 }}>التفاصيل الرسمية</a>
+                    <a href={service.official_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', color: '#fff', background: '#1F5F4A', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, fontWeight: 700, textDecoration: 'none' }}>
+                      فتح الخدمة <Icon d={ICON.external} size={14} />
+                    </a>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
         {answer.caveats.length > 0 && (
           <div style={{ margin: '14px 22px 0', padding: '12px 14px', background: '#FBF5E6', border: '1px solid #F0DFB5', borderRadius: 12, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
@@ -236,6 +333,13 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
             <Icon d={ICON.shield} size={14} />
             {answer.disclaimer_ar}
           </span>
+          {answer.source_health && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexBasis: '100%' }}>
+              <Icon d={ICON.clock} size={14} />
+              مصادر مختارة وليست شاملة · آخر تحقق من المصادر: {answer.corpus_verified_at ? fmtRiyadh(answer.corpus_verified_at) : 'لم يتم بعد'}
+              <Pill k={answer.source_health} size={10.5} dot={false} style={{ padding: '0 7px' }} />
+            </span>
+          )}
           <span dir="ltr" className="mono" title="معرّف الطلب وزمن الاستجابة" style={{ fontSize: 11, color: '#8C918C' }}>
             trace-{shortId(answer.trace_id)} · {(latencyMs / 1000).toFixed(1)}s
           </span>
@@ -245,7 +349,7 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
   )
 }
 
-type ArticleDetail = { version: Version; law: Law }
+type ArticleDetail = { article: Article; version: Version; law: Law }
 
 function SourcePanel({ citation, asOf, wide, onClose }: { citation: Citation; asOf: string; wide: boolean; onClose: () => void }) {
   const [detail, setDetail] = useState<ArticleDetail | null>(null)
@@ -312,7 +416,7 @@ function SourcePanel({ citation, asOf, wide, onClose }: { citation: Citation; as
         <div style={{ fontSize: 12.5, fontWeight: 600, color: '#3F4541', marginBottom: 8 }}>نص المادة</div>
         {/* The API cites whole articles, so no sub-span is highlighted. */}
         <div className="naskh" style={{ fontSize: 17.5, lineHeight: 1.95, color: '#1B1F1D', whiteSpace: 'pre-line' }}>
-          {compactSource(citation.quote)}
+          {compactSource(detail?.article.original_text_ar ?? citation.quote)}
         </div>
       </div>
       {versions.length > 0 && (
@@ -341,10 +445,10 @@ function SourcePanel({ citation, asOf, wide, onClose }: { citation: Citation; as
         </div>
       )}
       <div style={{ marginTop: 'auto', padding: '14px 20px 18px', borderTop: '1px solid #EEEAE1', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {citation.source_url && (
-          <a href={citation.source_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, border: '1px solid #1F5F4A', borderRadius: 10, padding: '9px 14px', fontSize: 13.5, fontWeight: 600, color: '#1F5F4A', textDecoration: 'none' }}>
+        {(citation.official_url ?? citation.source_url) && (
+          <a href={citation.official_url ?? citation.source_url ?? undefined} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, border: '1px solid #1F5F4A', borderRadius: 10, padding: '9px 14px', fontSize: 13.5, fontWeight: 600, color: '#1F5F4A', textDecoration: 'none' }}>
             <Icon d={ICON.external} size={16} />
-            {citation.is_test_data ? 'فتح المصدر (رابط تجريبي)' : 'فتح المصدر الرسمي'}
+            {citation.is_test_data ? 'فتح المصدر (رابط تجريبي)' : 'فتح القرار كاملًا من المصدر الرسمي'}
           </a>
         )}
         {version && (

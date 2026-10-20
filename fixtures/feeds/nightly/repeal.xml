@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEST DATA. A simulated official-gazette feed for the nightly synchronization tests.
+     Nothing here is a real publication. -->
+<rss version="2.0">
+  <channel>
+    <title>نشرة تجريبية للقرارات والأنظمة (بيانات اختبار)</title>
+    <link>https://fixture.invalid/feed</link>
+    <description>Simulated feed for the autonomous nightly synchronization</description>
+    <item>
+      <title>إلغاء نظام الشركات التجريبي</title>
+      <link>https://fixture.invalid/decisions/2005</link>
+      <guid isPermaLink="false">nightly-2005</guid>
+      <pubDate>Fri, 09 Oct 2026 10:00:00 +0300</pubDate>
+      <description>قرار تجريبي بإلغاء نظام الشركات التجريبي. (بيانات اختبار)</description>
+      <enclosure url="nightly/companies_repeal.txt" type="text/plain" length="0"/>
+    </item>
+  </channel>
+</rss>

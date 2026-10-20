@@ -1,12 +1,12 @@
 # Saudi Legal AI Assistant
 
-An Arabic, source-grounded legal RAG application for reviewed Saudi regulatory documents. It combines temporal retrieval, article-level citations, a human approval workflow, monitored updates, and explicit abstention when the indexed evidence is insufficient.
+An Arabic, source-grounded legal RAG application for Saudi regulatory documents. It combines temporal retrieval, article-level citations and explicit abstention with an **autonomous nightly synchronization** (PRD v2): every day at 00:00 Asia/Riyadh official sources are checked, machine-verifiable changes are published with zero clicks, uncertain ones are quarantined with a reason, and every answer states how fresh the corpus is.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Saudi Legal AI Assistant architecture" width="100%">
 </p>
 
-> **Assessment scope:** this is an engineering MVP and legal-information tool, not legal advice. The repository includes a clearly labelled fictional corpus for repeatable demonstrations; it does not claim complete coverage of Saudi law.
+> **Assessment scope:** this is an engineering MVP and legal-information tool, not legal advice. The production bootstrap and runtime use official sources only. Synthetic fixtures remain isolated to automated tests and are never loaded into the application corpus.
 
 ## What is implemented
 
@@ -15,17 +15,24 @@ An Arabic, source-grounded legal RAG application for reviewed Saudi regulatory d
 | Arabic parsing, immutable document versions and effective-date intervals | Implemented |
 | PostgreSQL full-text + pgvector retrieval with reciprocal-rank fusion | Implemented |
 | Evidence gating, article citations, answer validation and abstention | Implemented |
-| Source monitoring, diff, reviewer approval/rejection and rollback | Implemented |
+| **Nightly 00:00 Asia/Riyadh sync** with catch-up, retries, one run per day, advisory lock | Implemented — [autonomous_sync.md](docs/autonomous_sync.md) |
+| **Deterministic release gate**: auto-publish new laws, amendments and repeals; quarantine with reason codes | Implemented |
+| **Bounded agent** (5 allowlisted tools; rules or OpenAI structured proposals verified against the source) | Implemented |
+| Immutable source snapshots, incremental re-embedding, validated index generations with rollback | Implemented |
+| Freshness contract in every answer and in the UI (`/api/v1/freshness`) | Implemented |
+| Operator dashboard: sync runs, quarantine, generations, rollback; manual review as escape hatch | Implemented |
+| Horizontal scaling: stateless API, shared rate limits, proxy-aware client IPs, answer cache | Implemented — [scaling.md](docs/scaling.md) |
 | Arabic React UI for chat, corpus, review and operations | Implemented |
 | Persistent chat history | Implemented in browser storage; last 50 completed messages, with a clear-chat action |
+| Related government-service cards | Implemented by searching the complete official MOJ/Najiz catalog, cached with a reviewed outage fallback; separate from legal citations |
 | Authentication, audit events, traces, worker heartbeat and health checks | Implemented |
-| Real production corpus and production email delivery | Deliberately not bundled; see [limitations](#known-limitations) |
+| Official Umm Al-Qura acquisition and production email delivery | Official acquisition implemented; email delivery remains deployment-specific |
 
-Latest verified local run (13 October 2026): **137 backend tests passed**, Python lint passed, frontend lint and production build passed. The 34-case offline fixture evaluation measured 100% Recall@5, 100% citation accuracy, 96.2% auto-checked correctness, 100% abstention and 100% temporal scenarios. See the generated [evaluation report](tests/evaluation/results/report.md) for scope and the single known paraphrase miss.
+Latest verified release-candidate run (20 October 2026): **200 backend tests passed** (including the PRD v2 scenarios T01–T10, retrieval-relevance regression, scheduler compliance and scaling safeguards), Python and frontend lint passed, Python's 55 installed packages were compatible, the npm production audit found zero known vulnerabilities, and both API and web Docker images built successfully. The separate 34-case test-fixture evaluation measured 100% Recall@5, 100% citation accuracy, 96.2% auto-checked correctness, 100% abstention and 100% temporal scenarios. See the generated [evaluation report](tests/evaluation/results/report.md) for its deliberately synthetic scope.
 
 ## System walkthrough
 
-The screenshots below show the implemented Arabic RTL application and its real review workflow. All visible legal content is demo/test data and must not be treated as official legal advice.
+The screenshots below document the implemented Arabic RTL workflow. They are UI test captures; the running corpus is populated independently from official sources and every live citation links to its government page.
 
 ### Arabic chat and grounded answers
 
@@ -123,7 +130,7 @@ The screenshots below show the implemented Arabic RTL application and its real r
 
 ## Five-minute evaluator setup
 
-Requirements: Docker Desktop with Compose. No external AI key is required for the deterministic demo.
+Requirements: Docker Desktop with Compose. The default runtime uses official sources only.
 
 ### Windows PowerShell
 
@@ -131,7 +138,7 @@ Requirements: Docker Desktop with Compose. No external AI key is required for th
 Copy-Item .env.example .env
 # Set ADMIN_PASSWORD to 12+ characters in .env
 docker compose up --build -d
-docker compose run --rm -e ALLOW_FIXTURE_SOURCES=true migrate python -m legal_core.cli bootstrap-demo
+docker compose run --rm migrate python -m legal_core.cli bootstrap
 cd apps/web
 npm install
 npm run dev
@@ -143,7 +150,7 @@ npm run dev
 cp .env.example .env
 # Set ADMIN_PASSWORD to 12+ characters in .env
 docker compose up --build -d
-docker compose run --rm -e ALLOW_FIXTURE_SOURCES=true migrate python -m legal_core.cli bootstrap-demo
+docker compose run --rm migrate python -m legal_core.cli bootstrap
 cd apps/web
 npm install
 npm run dev
@@ -160,15 +167,16 @@ Use `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env` for the reviewer account. If 
 
 ## Suggested evaluation flow
 
-1. Ask `كم مدة فترة التجربة في نظام العمل؟` and open the numbered source citation.
-2. Refresh the browser: the completed conversation remains available. Use **محادثة جديدة** to erase it locally.
-3. Ask an out-of-corpus question and confirm the assistant abstains without inventing citations.
-4. Sign in as the reviewer and inspect the corpus, version timeline, source link and effective date.
-5. Run source sync twice; the simulated amendment remains one candidate because ingestion is idempotent.
-6. Confirm the pending amendment does not affect answers, approve it with an effective date and evidence, then compare answers before and after that date.
-7. Open Operations to inspect jobs, source status, worker health and audit events.
+1. Sign in as the reviewer and open **Operations**; confirm the official Umm Al-Qura source is enabled.
+2. Press **تشغيل المزامنة الآن** (the same pipeline that runs at 00:00 Riyadh).
+3. The run summary shows discovered, published and quarantined official items. Open every citation at
+   its original government page.
+4. Ask a question covered by a published item and confirm the answer cites that official version.
+5. Ask an out-of-corpus question and confirm the assistant abstains without inventing citations.
+6. Refresh the browser: the completed conversation remains available. The freshness bar shows the
+   last verified synchronization and source health.
 
-The complete workflow is automated in [`tests/integration/test_workflows.py`](tests/integration/test_workflows.py).
+The full scenario list (T01–T10) is automated in [`tests/integration/test_nightly_sync.py`](tests/integration/test_nightly_sync.py); see [docs/autonomous_sync.md](docs/autonomous_sync.md) for the demo script and traceability.
 
 ## How the RAG pipeline works
 
@@ -180,17 +188,28 @@ The complete workflow is automated in [`tests/integration/test_workflows.py`](te
 6. The server validates citations and constructs source metadata from database rows, never from model output.
 7. Invalid output is retried once, then replaced by a cited extractive fallback.
 
-The default `hash` embedding and `extractive` answer providers are deterministic and work offline. Set `EMBEDDING_PROVIDER=openai`, `LLM_PROVIDER=openai`, and `OPENAI_API_KEY` to exercise the generative path. Re-index approved versions after changing an embedding model or provider.
+After the legal pipeline, a separate deterministic matcher may attach a relevant Ministry of Justice/Najiz
+service card for action-oriented questions. The API synchronizes the Ministry's public SharePoint service
+catalog at startup and every hour, then searches Arabic service titles and descriptions. The working snapshot
+exists only in process memory (not as a manually maintained database); the last good snapshot survives a temporary
+source outage until the process restarts, and a small reviewed set covers a cold-start outage.
+Service cards use an exact HTTPS host allowlist and carry `legal_evidence: false`; they remain available when
+the legal answer abstains, and are never inserted into the legal evidence or citation set.
 
-## Review and update lifecycle
+The default `hash` embedding and `extractive` answer providers are deterministic test/local fallbacks and only measure surface overlap. Production refuses those fallbacks: set `EMBEDDING_PROVIDER=openai`, `LLM_PROVIDER=openai`, and `OPENAI_API_KEY` for semantic Arabic retrieval and grounded contextual answers. After changing an embedding provider, model or dimension, run `python -m legal_core.cli reindex-approved`; the old index remains active if embedding or validation fails.
+
+## Autonomous update lifecycle
 
 ```text
-allowlisted source → candidate → acquire/attach document → parse + diff
-                   → reviewer verifies dates and warnings → approve or reject
-                   → immutable version + index → date-aware RAG
+00:00 Asia/Riyadh → discover (official feeds) → fetch + immutable snapshot → dedupe → parse
+                  → classify (bounded agent) → deterministic release gate
+                       ├─ pass → version + incremental embeddings → health-checked generation switch
+                       ├─ uncertain → quarantine (reason code, alert, retried when transient)
+                       └─ draft / notice / news → excluded
+                  → audit + freshness report → date-aware RAG
 ```
 
-Only approved versions enter retrieval. Approval requires a confirmed `effective_from` date and supporting evidence. Publication date is stored separately and is never silently used as the effective date. Rollback deactivates an index/version and appends an audit event; it does not delete history.
+A change is published only when every code-level check passes: official source, stored snapshot, supported legal type, valid article structure, resolved target instrument, exactly one effective date read from a commencement clause, and no conflicting version. Publication date is never silently used as the effective date. Failures leave the active corpus intact; rollback restores an earlier index generation without deleting history. An operator can still approve or reject a quarantined item (escape hatch), but routine updates need zero clicks.
 
 ## Local development
 
@@ -254,6 +273,9 @@ The PRD demonstration cases are covered as follows:
 | Hostile document instructions | `test_q7_instructions_inside_documents_are_not_followed` |
 | Source outage | `test_q8_source_outage_is_retried_reported_and_harmless` |
 
+PRD v2 scenarios T01–T10, scheduler compliance, rollback and fault injection are mapped test-by-test in
+[docs/autonomous_sync.md](docs/autonomous_sync.md#prd-traceability).
+
 ## Privacy and security defaults
 
 - Question text is not stored server-side unless `TRACE_STORE_QUERY_TEXT=true`; traces retain a query hash and retrieved/cited identifiers.
@@ -274,9 +296,11 @@ See [`.env.example`](.env.example). Important variables:
 | `LLM_PROVIDER`, `LLM_MODEL` | `extractive` for offline reproducibility or `openai` for grounded generation |
 | `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | `hash` or `openai`; model changes require re-indexing |
 | `SOURCE_ALLOWLIST` | Hosts allowed for monitored acquisition |
-| `ALLOW_FIXTURE_SOURCES` | Explicit opt-in for fictional demo data |
+| `ALLOW_FIXTURE_SOURCES` | Must remain `false` outside automated tests |
 | `TRACE_STORE_QUERY_TEXT`, `TRACE_RETENTION_DAYS` | Trace privacy and retention |
 | `MIN_LEXICAL_COVERAGE`, `MIN_VECTOR_SIMILARITY` | Retrieval evidence thresholds |
+| `SYNC_TIMEZONE`, `SYNC_CATCHUP_DAYS`, `SYNC_MAX_RETRIES`, `AGENT_PROVIDER`, `ALERT_WEBHOOK_URL` | Nightly synchronization |
+| `WEB_CONCURRENCY`, `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `TRUSTED_PROXY_COUNT`, `RATE_LIMIT_BACKEND`, `ANSWER_CACHE_SIZE` | Scaling — see [docs/scaling.md](docs/scaling.md) |
 
 ## Repository layout
 
@@ -286,36 +310,43 @@ packages/legal_core/   Parsing, ingestion, temporal rules, retrieval and answer 
 services/api/          FastAPI routes, schemas and authentication
 services/worker/       PostgreSQL job runner, scheduler and heartbeat
 db/migrations/         Alembic schema migrations
-fixtures/              Fictional, checksum-pinned demo corpus and simulated feed
+fixtures/              Automated-test inputs only; never loaded by bootstrap or production
 tests/                 Unit, integration, security workflows and evaluation harness
 docs/                  Architecture, source policy and API notes
 ```
 
 ## Railway live demo
 
-The repository includes production-ready Docker entry points for a Railway
-demo containing a pgvector database, the API/background worker, persistent
-upload storage, and the React frontend. The demo uses the deterministic
-offline providers, so no OpenAI key is required.
+The recommended Railway layout runs a pgvector database, a stateless API with
+2+ replicas, exactly one worker (nightly sync + job queue) and the React
+frontend. Documents are stored as database snapshots, so no volume is needed.
+The default deterministic providers require no OpenAI key; legal content still comes from the official source.
 
-Follow the exact service settings, variables, migration command, health check,
-volume mount, and smoke-test checklist in
-[the Railway deployment guide](deploy/railway/README.md). Keep the evaluator's
-administrator credentials private rather than publishing them in this README.
+Follow the service settings, variables (including `TRUSTED_PROXY_COUNT=1`
+behind Railway's proxy), migration command, health check and smoke test in
+[the Railway deployment guide](deploy/railway/README.md); Kubernetes manifests
+are in [`deploy/k8s`](deploy/k8s). Keep the evaluator's administrator
+credentials private rather than publishing them in this README.
 
 ## Known limitations
 
-- The bundled corpus is fictional and intentionally small. Official sources are registered disabled until an administrator completes source/licence review.
+- Coverage starts with the official Umm Al-Qura decisions-and-regulations feed and grows through nightly synchronization; this MVP does not claim complete coverage of all Saudi law.
 - The deterministic hash embedding provider is useful for repeatability, not semantic-quality claims. A real embedding model is needed for paraphrases with little shared vocabulary.
 - OpenAI generation is implemented but requires the evaluator's own API key and a live evaluation run.
 - Scanned PDFs requiring OCR are rejected with a clear error and are outside this MVP.
-- Amendments containing only changed clauses are flagged for review rather than automatically merged into a consolidated law.
-- Password-reset email delivery, distributed rate limiting and production TLS termination are deployment responsibilities.
+- Amendments containing only changed clauses are quarantined (`AMBIGUOUS_AMENDMENT_MAPPING`) rather than automatically merged into a consolidated law.
+- Hijri-only commencement dates are quarantined (`HIJRI_DATE_UNVERIFIED`); no Umm al-Qura calendar conversion is bundled.
+- The Umm Al-Qura decisions-and-regulations feed is enabled with same-host `fetch_allowed`; every fetched page still passes allowlist, SSRF, MIME, size and deterministic release-gate checks.
+- Supplementary web search is an extension point (`SearchProvider`); no search API is bundled.
+- The answer cache is per process; a shared cache (e.g. Redis) would raise hit rates across replicas.
+- Password-reset email delivery and production TLS termination are deployment responsibilities.
 - A PDPL/cross-border data-transfer assessment is required before handling real user questions in production.
 
 ## Further documentation
 
 - [Architecture and invariants](docs/architecture.md)
+- [Autonomous nightly synchronization (PRD v2)](docs/autonomous_sync.md)
+- [Scaling and stability for 1,000+ users](docs/scaling.md)
 - [Source governance](docs/source_policy.md)
 - [Frontend/API integration](docs/api.md)
 - [Evaluation report](tests/evaluation/results/report.md)

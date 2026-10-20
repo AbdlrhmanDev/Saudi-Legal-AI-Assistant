@@ -109,7 +109,12 @@ def test_q1_answer_carries_an_article_level_citation_and_trace(ask, corpus):
     "question",
     [
         "ما عقوبة تجاوز السرعة في نظام المرور؟",
+        "ما عقوبة تجاوز السرعة؟",
+        "ما مخالفات التستر؟",
+        "ما عقوبة التستر التجاري؟",
+        "أبي أعرف وش عقوبة التستر التجاري؟",
         "ما شروط الحصول على رخصة البناء؟",
+        "ما شروط رخصة البناء؟",
         "كم تبلغ ضريبة القيمة المضافة؟",
     ],
 )
@@ -118,6 +123,46 @@ def test_q2_out_of_corpus_question_abstains_without_citations(ask, question):
     assert result["answer_status"] == "insufficient_evidence"
     assert result["citations"] == []
     assert "المادة" not in result["answer_ar"]  # no statutory reference of any kind
+
+
+def test_named_future_instrument_never_falls_through_to_unrelated_active_text(
+    ask, corpus, settings, embedder
+):
+    ingested = ingest_document(
+        corpus,
+        content=(
+            "دليل تراخيص الاستيراد التجريبي\n"
+            "المادة الأولى:\nتوضح هذه المادة نطاق دليل تراخيص الاستيراد التجريبي."
+        ).encode(),
+        filename="future-import-guide.txt",
+        mime_type="text/plain",
+        meta=DocumentMetadata(
+            title_ar="دليل تراخيص الاستيراد التجريبي",
+            domain="commercial",
+            instrument_type="guidance",
+            issuing_authority="جهة تجريبية",
+            source_url="https://fixture.invalid/corpus/future-import-guide",
+            published_at=date(2026, 10, 1),
+            is_test_data=True,
+        ),
+        settings=settings,
+    )
+    approve_candidate(
+        corpus,
+        ingested.candidate_id,
+        actor_id=None,
+        effective_from=date(2026, 11, 1),
+        effective_date_evidence="Fixture effective date.",
+        embedder=embedder,
+        settings=settings,
+    )
+    corpus.commit()
+
+    result = ask("هل يحتوي النص على شروط تفصيلية للحصول على ترخيص استيراد؟")
+    assert result["answer_status"] == "insufficient_evidence"
+    assert result["citations"] == []
+    assert "غير نافذ" in result["answer_ar"] and "2026-11-01" in result["answer_ar"]
+    assert result["forthcoming"][0]["law_title_ar"] == "دليل تراخيص الاستيراد التجريبي"
 
 
 def test_fr06_domain_filter_restricts_evidence(ask):
@@ -135,6 +180,12 @@ def test_retrieval_is_robust_to_arabic_spelling_variants(ask):
     # no hamza, ta marbuta written as ha, attached particles
     result = ask("كم مده فتره التجربه للعامل")
     assert result["citations"][0]["article_number"] == "5"
+
+
+def test_legal_document_synonyms_retrieve_the_named_topic(ask):
+    result = ask("قوانين العمل")
+    assert result["answer_status"] != "insufficient_evidence"
+    assert result["citations"][0]["law_title_ar"].startswith("نظام العمل")
 
 
 # --- Q4 / Q5 / Q6 / Q3: discovery -> review -> approval -> time-valid answers -----

@@ -100,8 +100,8 @@ finish before the first `delta` is released; this deliberately prevents an unval
 flashing in the UI. A terminal `error` event contains a public error code/message and no internal details.
 
 `related_services` is a separate convenience contract sourced from the official Ministry of Justice/Najiz
-service catalog. Each API process refreshes it at startup and hourly; the snapshot is memory-only and a small
-reviewed fallback is used only when the official source is unavailable during cold start.
+service directory. Each service-oriented request reads the current official source; the application keeps no
+local catalog, cache or stale fallback. When the official source is unavailable, the field is empty.
 It may be present even when `answer_status` is `insufficient_evidence`. It must be rendered as an action card,
 not as a citation; `legal_evidence` is always `false`. Only exact allowlisted HTTPS hosts are included.
 

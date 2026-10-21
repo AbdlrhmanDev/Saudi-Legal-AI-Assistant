@@ -23,8 +23,8 @@ An Arabic, source-grounded legal RAG application for Saudi regulatory documents.
 | Operator dashboard: sync runs, quarantine, generations, rollback; manual review as escape hatch | Implemented |
 | Horizontal scaling: stateless API, shared rate limits, proxy-aware client IPs, answer cache | Implemented — [scaling.md](docs/scaling.md) |
 | Arabic React UI for chat, corpus, review and operations | Implemented |
-| Persistent chat history | Implemented in browser storage; last 50 completed messages, with a clear-chat action |
-| Related government-service cards | Implemented by searching the complete official MOJ/Najiz catalog, cached with a reviewed outage fallback; separate from legal citations |
+| Private persistent chat history | Implemented in browser storage; isolated by user ID (and by guest tab), last 50 completed messages, with a clear-chat action |
+| Related government-service cards | Implemented by querying the current official MOJ/Najiz directory for each service request; no local catalog or stale fallback; separate from legal citations |
 | Authentication, audit events, traces, worker heartbeat and health checks | Implemented |
 | Official Umm Al-Qura acquisition and production email delivery | Official acquisition implemented; email delivery remains deployment-specific |
 
@@ -189,10 +189,10 @@ The full scenario list (T01–T10) is automated in [`tests/integration/test_nigh
 7. Invalid output is retried once, then replaced by a cited extractive fallback.
 
 After the legal pipeline, a separate deterministic matcher may attach a relevant Ministry of Justice/Najiz
-service card for action-oriented questions. The API synchronizes the Ministry's public SharePoint service
-catalog at startup and every hour, then searches Arabic service titles and descriptions. The working snapshot
-exists only in process memory (not as a manually maintained database); the last good snapshot survives a temporary
-source outage until the process restarts, and a small reviewed set covers a cold-start outage.
+service card for action-oriented questions. Every such request reads the Ministry's current public SharePoint
+directory and searches its Arabic service titles and descriptions. The application does not persist or cache a
+local catalog and does not serve stale fallback entries; if the official source is unavailable, it returns no
+service card rather than presenting old information.
 Service cards use an exact HTTPS host allowlist and carry `legal_evidence: false`; they remain available when
 the legal answer abstains, and are never inserted into the legal evidence or citation set.
 

@@ -285,7 +285,6 @@ def answer_question(
     related_services = suggest_official_services(
         query,
         live=settings.official_service_search_enabled and settings.environment != "test",
-        cache_ttl_seconds=settings.official_service_cache_seconds,
         timeout_seconds=settings.official_service_timeout_seconds,
     )
 

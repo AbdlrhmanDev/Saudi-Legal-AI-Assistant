@@ -82,10 +82,8 @@ class Settings(BaseSettings):
     # In-process answer cache, keyed by the active index generation (0 disables it).
     answer_cache_size: int = 2000
     answer_cache_ttl_seconds: int = 900
-    # Public Ministry of Justice/Najiz service catalog. Loaded in the background and cached per API process.
+    # Public Ministry of Justice/Najiz service directory. Queried live; never stored locally.
     official_service_search_enabled: bool = True
-    official_service_refresh_seconds: int = 3600
-    official_service_cache_seconds: int = 3600
     official_service_timeout_seconds: float = 25.0
 
     # Storage / uploads

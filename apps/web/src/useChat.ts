@@ -7,8 +7,9 @@ import type { ChatMessage } from './chatStorage'
 import { todayIso } from './uiData'
 
 /** Conversation state lives above the screen so it survives navigation. */
-export function useChat() {
-  const [messages, setMessages] = useState<ChatMessage[]>(loadChatMessages)
+export function useChat(owner: string | null) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [loadedOwner, setLoadedOwner] = useState<string | null>(null)
   const [domain, setDomain] = useState('all')
   const [asOf, setAsOf] = useState(todayIso)
   const [input, setInput] = useState('')
@@ -56,13 +57,28 @@ export function useChat() {
     [asOf, busy, domain, input],
   )
 
-  useEffect(() => saveChatMessages(messages), [messages])
+  useEffect(() => {
+    // Switching accounts is an external storage change: replace, never merge, the visible history.
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSource(null)
+    if (owner === null) {
+      setMessages([])
+      setLoadedOwner(null)
+      return
+    }
+    setMessages(loadChatMessages(owner))
+    setLoadedOwner(owner)
+  }, [owner])
+
+  useEffect(() => {
+    if (owner !== null && loadedOwner === owner) saveChatMessages(owner, messages)
+  }, [loadedOwner, messages, owner])
 
   const clear = useCallback(() => {
-    clearSavedChat()
+    if (owner !== null) clearSavedChat(owner)
     setMessages([])
     setSource(null)
-  }, [])
+  }, [owner])
 
   return { messages, domain, setDomain, asOf, setAsOf, input, setInput, source, setSource, send, clear, busy }
 }

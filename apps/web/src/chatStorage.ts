@@ -7,7 +7,9 @@ export type ChatMessage =
   | { role: 'assistant'; answer: ChatAnswer; latencyMs: number }
   | { role: 'error'; text: string }
 
-const STORAGE_KEY = 'saudi-legal-ai:chat:v1'
+const LEGACY_STORAGE_KEY = 'saudi-legal-ai:chat:v1'
+const STORAGE_PREFIX = 'saudi-legal-ai:chat:v2:'
+const GUEST_SESSION_KEY = 'saudi-legal-ai:guest-session:v1'
 const MAX_MESSAGES = 50
 
 type StoredChat = { version: 1; messages: ChatMessage[] }
@@ -30,9 +32,28 @@ function isSavedMessage(value: unknown): value is ChatMessage {
   )
 }
 
-export function loadChatMessages(): ChatMessage[] {
+const storageKey = (owner: string) => `${STORAGE_PREFIX}${encodeURIComponent(owner)}`
+
+/** One guest tab is one private conversation owner; signing in uses the database user id instead. */
+export function getGuestChatOwner(): string {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const existing = sessionStorage.getItem(GUEST_SESSION_KEY)
+    if (existing) return `guest:${existing}`
+    const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    sessionStorage.setItem(GUEST_SESSION_KEY, id)
+    return `guest:${id}`
+  } catch {
+    return `guest:ephemeral-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+}
+
+export function loadChatMessages(owner: string): ChatMessage[] {
+  try {
+    // Version 1 used one shared key for every account. Never display that mixed history again.
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
+    const raw = localStorage.getItem(storageKey(owner))
     if (!raw) return []
     const stored: unknown = JSON.parse(raw)
     if (!isObject(stored) || stored.version !== 1 || !Array.isArray(stored.messages)) return []
@@ -42,19 +63,19 @@ export function loadChatMessages(): ChatMessage[] {
   }
 }
 
-export function saveChatMessages(messages: ChatMessage[]) {
+export function saveChatMessages(owner: string, messages: ChatMessage[]) {
   try {
     const saved = messages.filter((message) => message.role !== 'pending' && message.role !== 'streaming').slice(-MAX_MESSAGES)
     const payload: StoredChat = { version: 1, messages: saved }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+    localStorage.setItem(storageKey(owner), JSON.stringify(payload))
   } catch {
     // Storage may be unavailable or full. Chat remains usable for the current tab.
   }
 }
 
-export function clearSavedChat() {
+export function clearSavedChat(owner: string) {
   try {
-    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(storageKey(owner))
   } catch {
     // Nothing else is required when browser storage is unavailable.
   }

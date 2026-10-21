@@ -9,6 +9,7 @@ import { Icon, Logo } from './ui'
 import { DOMAIN_AR, ICON, fmtRiyadh } from './uiData'
 import type { Flash } from './uiData'
 import { useChat } from './useChat'
+import { getGuestChatOwner } from './chatStorage'
 
 type Screen = 'chat' | 'corpus' | 'updates' | 'ops'
 
@@ -21,13 +22,16 @@ const HEALTH_DOT = { healthy: '#2E7D5B', delayed: '#C08A1E', degraded: '#9B2C2C'
 
 export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogout: () => void }) {
   const [user, setUser] = useState<User | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(hasToken)
+  const [guestOwner] = useState(getGuestChatOwner)
   const [screen, setScreen] = useState<Screen>('chat')
   const [toast, setToast] = useState<{ text: string; bg: string } | null>(null)
   const [coverage, setCoverage] = useState<Coverage | null>(null)
   const [freshness, setFreshness] = useState<Freshness | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const toastTimer = useRef<number | undefined>(undefined)
-  const chat = useChat()
+  const chatOwner = sessionLoading ? null : user ? `user:${user.id}` : guestOwner
+  const chat = useChat(chatOwner)
 
   const flash = useCallback<Flash>((text, kind) => {
     window.clearTimeout(toastTimer.current)
@@ -53,9 +57,15 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
   }, [])
 
   useEffect(() => {
-    if (hasToken()) api<User>('/api/v1/auth/me').then(setUser).catch(() => setUser(null))
+    if (hasToken()) {
+      api<User>('/api/v1/auth/me')
+        .then(setUser)
+        .catch(() => setUser(null))
+        .finally(() => setSessionLoading(false))
+    }
     const expired = () => {
       setUser(null)
+      setSessionLoading(false)
       setScreen('chat')
       flash('انتهت الجلسة. سجّل الدخول من جديد.', 'err')
     }
@@ -68,6 +78,7 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
   const logout = () => {
     setToken(null)
     setUser(null)
+    setSessionLoading(false)
     setScreen('chat')
     setPendingCount(0)
     onLogout()

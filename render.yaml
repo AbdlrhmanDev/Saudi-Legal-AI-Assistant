@@ -47,6 +47,8 @@ services:
         value: "0"
       - key: SYNC_SCHEDULER
         value: "true"
+      - key: FETCH_TIMEOUT_SECONDS
+        value: "30"
       - key: WEB_CONCURRENCY
         value: "1"
       - key: DB_POOL_SIZE

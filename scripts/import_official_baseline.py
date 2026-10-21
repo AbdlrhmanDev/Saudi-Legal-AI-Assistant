@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from datetime import date
 
@@ -109,7 +110,22 @@ def import_document(document: OfficialDocument, *, approve: bool, if_missing: bo
             "source_url": canonicalize_url(document.url),
         }
     settings = get_settings()
-    content = make_http_fetcher(settings)(document.url)
+    content: bytes | None = None
+    for attempt in range(1, 4):
+        try:
+            content = make_http_fetcher(settings)(document.url)
+            break
+        except Exception as exc:
+            if attempt == 3:
+                raise
+            print(
+                f"official fetch attempt {attempt}/3 failed for {document.title}: "
+                f"{type(exc).__name__}; retrying",
+                flush=True,
+            )
+            time.sleep(3 * attempt)
+    if content is None:  # pragma: no cover - defensive; the final failed attempt raises above
+        raise RuntimeError(f"official fetch returned no content for {document.title}")
     parsed = parse_boe_html(content)
     if parsed is None or len(parsed.articles) < document.minimum_articles:
         raise RuntimeError(f"official structure check failed for {document.title}")

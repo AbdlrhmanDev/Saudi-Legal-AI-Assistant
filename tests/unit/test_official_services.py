@@ -87,6 +87,71 @@ def test_live_catalog_search_finds_a_service_not_in_the_fallback_directory(monke
     official_services.clear_official_service_cache()
 
 
+def test_colloquial_marriage_request_routes_to_live_catalog(monkeypatch):
+    remote = OfficialService(
+        id="moj-service-300",
+        title_ar="إنشاء عقد زواج",
+        description_ar="خدمة إلكترونية لتقديم عقد زواج وتوثيقه.",
+        guidance_ar="بحسب كتالوج وزارة العدل الرسمي، تتيح الخدمة إنشاء عقد زواج.",
+        provider_ar="وزارة العدل — ناجز",
+        official_url="https://najiz.sa/applications/social-cases/marriage-contract",
+        official_info_url="https://www.moj.gov.sa/ar/eServices/Pages/ServiceDetailsNew.aspx?itemId=300",
+        last_verified_at="2026-10-21",
+        match_phrases=(),
+    )
+    monkeypatch.setattr(official_services, "_download_catalog", lambda _timeout: (remote,))
+    official_services.clear_official_service_cache()
+
+    results = suggest_official_services("أبغى إنشاء عقد زواج", live=True)
+
+    assert [item["title_ar"] for item in results] == ["إنشاء عقد زواج"]
+    official_services.clear_official_service_cache()
+
+
+def test_download_catalog_accepts_sharepoint_verbose_json(monkeypatch):
+    class Response:
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "d": {
+                    "results": [
+                        {
+                            "Id": 300,
+                            "Title": "إنشاء عقد زواج",
+                            "Description": "خدمة إلكترونية لتقديم عقد زواج وتوثيقه.",
+                            "ServiceURL": "https://najiz.sa/applications/social-cases/marriage-contract",
+                            "Steps": "<ol><li>تسجيل الدخول</li></ol>",
+                            "Requirements": "<ul><li>النفاذ الوطني</li></ul>",
+                        }
+                    ]
+                }
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _url, *, params):
+            assert params["$format"] == "json"
+            return Response()
+
+    monkeypatch.setattr(official_services.httpx, "Client", Client)
+
+    services = official_services._download_catalog(5)
+
+    assert [service.title_ar for service in services] == ["إنشاء عقد زواج"]
+
+
 def test_remote_catalog_item_is_cleaned_and_untrusted_action_hosts_are_rejected():
     item = {
         "Id": 901,

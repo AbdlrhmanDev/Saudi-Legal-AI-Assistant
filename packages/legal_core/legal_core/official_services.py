@@ -30,7 +30,7 @@ _SERVICE_INTENT = frozenset(
     {
         "خدمه", "ناجز", "استعلام", "استعلم", "تحقق", "اتحقق", "اصدار", "استخراج", "توثيق", "رقمنه",
         "طلب", "تقديم", "اقدم", "ارفع", "احجز", "وين", "ابغي", "ابي", "تسجيل", "تحديث", "اضافه",
-        "متابعه",
+        "متابعه", "انشاء", "اسوي", "سوي", "الكتروني", "الكترونيه",
     }
 )
 _catalog_lock = threading.Lock()
@@ -266,9 +266,12 @@ def _download_catalog(timeout_seconds: float) -> tuple[OfficialService, ...]:
     params = {
         "$select": "Id,Title,Description,ServiceURL,Steps,Requirements,Modified,Category",
         "$top": str(_CATALOG_MAX_ITEMS),
+        # The Ministry's SharePoint currently ignores the nometadata Accept variant unless the
+        # response format is explicit, and otherwise returns Atom XML.
+        "$format": "json",
     }
     headers = {
-        "Accept": "application/json;odata=nometadata",
+        "Accept": "application/json;odata=verbose",
         "User-Agent": "SaudiLegalAI-MVP/0.1 (official service catalog; cached)",
     }
     with httpx.Client(timeout=timeout_seconds, follow_redirects=False, headers=headers) as client:
@@ -278,6 +281,9 @@ def _download_catalog(timeout_seconds: float) -> tuple[OfficialService, ...]:
         raise ValueError("official service catalog exceeded the response size limit")
     payload = response.json()
     raw_items = payload.get("value") if isinstance(payload, dict) else None
+    if raw_items is None and isinstance(payload, dict):
+        verbose = payload.get("d")
+        raw_items = verbose.get("results") if isinstance(verbose, dict) else None
     if not isinstance(raw_items, list) or len(raw_items) > _CATALOG_MAX_ITEMS:
         raise ValueError("official service catalog returned an invalid item list")
     verified_on = datetime.now(ZoneInfo("Asia/Riyadh")).date().isoformat()
@@ -379,8 +385,10 @@ def suggest_official_services(
         return [service.public_dict() for _, service in matches[: max(0, limit)]]
     if not live or limit <= 0:
         return []
-    query_tokens = set(lexical_tokens(query, drop_stopwords=True))
-    if not (query_tokens & _SERVICE_INTENT):
+    # Intent words such as colloquial "أبغى/أبي" are stopwords for legal retrieval, but are
+    # decisive here. Preserve them for service routing while the ranker still uses content words.
+    intent_tokens = set(lexical_tokens(query, drop_stopwords=False))
+    if not (intent_tokens & _SERVICE_INTENT):
         return []
     catalog = _cached_or_live_catalog(ttl_seconds=cache_ttl_seconds, timeout_seconds=timeout_seconds)
     return [service.public_dict() for service in _rank_catalog(query, catalog, limit)]

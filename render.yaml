@@ -20,7 +20,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_EMAIL
-        sync: false
+        value: admin@saudi-legal-ai.app
       - key: ADMIN_PASSWORD
         sync: false
       - key: CORS_ORIGINS

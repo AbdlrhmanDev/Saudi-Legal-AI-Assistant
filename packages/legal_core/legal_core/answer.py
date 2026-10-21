@@ -153,6 +153,14 @@ def _validate(draft: Draft, evidence: list[Evidence], query: str | None = None) 
     if "سرع" in normalized_query and speed_table and unspecified_road_limit:
         if "120" not in draft.answer_ar or "140" not in draft.answer_ar:
             return "answer must cover both posted-speed branches (120-or-less and 140) found in the evidence"
+        if "30" in (query or ""):
+            required_amounts = {"800", "1000", "1200", "1500", "2000"}
+            missing_amounts = sorted(amount for amount in required_amounts if amount not in draft.answer_ar)
+            if missing_amounts:
+                return (
+                    "answer to an unbounded over-30 query must include every matching fine range; "
+                    f"missing values {missing_amounts}"
+                )
         if draft.answer_status != "partial" or not draft.caveats:
             return "answer depends on the unspecified posted road speed and must be partial with a caveat"
     return None
@@ -304,7 +312,7 @@ def answer_question(
     cached = None
     if settings.answer_cache_size > 0:
         cache_key = (
-            "structured-answer-v8",
+            "structured-answer-v9",
             normalize_ar(query),
             domain,
             as_of,

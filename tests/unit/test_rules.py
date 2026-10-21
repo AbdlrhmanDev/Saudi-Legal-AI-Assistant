@@ -101,7 +101,8 @@ def test_validation_requires_every_traffic_table_branch_for_unspecified_road_lim
     assert "both posted-speed branches" in _validate(incomplete, traffic, "السرعة أكثر من 30 كم؟")
 
     complete = Draft(
-        "- إذا كان حد الطريق 120 فأقل: بحسب مقدار التجاوز.\n- إذا كان حد الطريق 140: بحسب مقدار التجاوز.",
+        "- إذا كان حد الطريق 120 فأقل: 800 1000 1200 1500 2000.\n"
+        "- إذا كان حد الطريق 140: 1500 2000.",
         "partial",
         ["E1"],
         ["يلزم تحديد سرعة الطريق."],

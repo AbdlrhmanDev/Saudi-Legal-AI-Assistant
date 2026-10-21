@@ -292,7 +292,7 @@ def answer_question(
     cached = None
     if settings.answer_cache_size > 0:
         cache_key = (
-            "structured-answer-v6",
+            "structured-answer-v7",
             normalize_ar(query),
             domain,
             as_of,

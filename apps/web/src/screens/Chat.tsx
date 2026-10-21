@@ -65,15 +65,31 @@ function AnswerText({ text }: { text: string }) {
 /** Freshness contract (PRD v2 6.2): when the corpus was last verified and whether sources are current. */
 function FreshnessBar({ freshness }: { freshness: Freshness }) {
   const healthy = freshness.source_health === 'healthy'
+  const palette = healthy
+    ? { background: '#F3F8F5', border: '#DCE9E1', accent: '#1F5F4A', muted: '#5E655F' }
+    : { background: '#FFF8E8', border: '#EBD9A8', accent: '#7A4F00', muted: '#685A3B' }
   return (
-    <div className="pad-x" role="status" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 14px', padding: '8px 28px', fontSize: 12.5, color: healthy ? '#3F4541' : '#5A4210', background: healthy ? '#F3F8F5' : '#FBF5E6', borderBottom: `1px solid ${healthy ? '#DCE9E1' : '#F0DFB5'}` }}>
-      <Pill k={freshness.source_health} size={11.5} />
-      <span>
-        آخر مزامنة موثّقة مع المصادر الرسمية: <strong>{freshness.corpus_verified_at ? fmtRiyadh(freshness.corpus_verified_at) : 'لم تتم بعد'}</strong>
-      </span>
-      {freshness.latest_included_publication && <span>· أحدث نشر رسمي مضمَّن: {fmtDate(freshness.latest_included_publication)}</span>}
-      <span>· المزامنة التالية: {fmtRiyadh(freshness.next_scheduled_sync)}</span>
-      {freshness.warning_ar && <span style={{ flexBasis: '100%', fontWeight: 600 }}>{freshness.warning_ar}</span>}
+    <div className="pad-x" role="status" style={{ padding: '10px 28px', color: '#303632', background: palette.background, borderBottom: `1px solid ${palette.border}` }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 18px', fontSize: 12.5, lineHeight: 1.55 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span aria-hidden="true" style={{ display: 'flex', color: palette.accent }}><Icon d={healthy ? ICON.check : ICON.warn} size={17} /></span>
+          <strong style={{ fontSize: 13 }}>حالة المصادر</strong>
+          <Pill k={freshness.source_health} size={11.5} />
+        </div>
+        <span style={{ color: palette.muted }}>
+          آخر تحقق: <strong style={{ color: '#303632' }}>{freshness.corpus_verified_at ? fmtRiyadh(freshness.corpus_verified_at) : 'لم يتم بعد'}</strong>
+        </span>
+        {freshness.latest_included_publication && (
+          <span style={{ color: palette.muted }}>أحدث نشر مضمّن: <strong style={{ color: '#303632' }}>{fmtDate(freshness.latest_included_publication)}</strong></span>
+        )}
+        <span style={{ color: palette.muted }}>المزامنة القادمة: <strong style={{ color: '#303632' }}>{fmtRiyadh(freshness.next_scheduled_sync)}</strong></span>
+      </div>
+      {freshness.warning_ar && (
+        <div style={{ marginTop: 7, paddingTop: 7, borderTop: `1px solid ${palette.border}`, display: 'flex', alignItems: 'flex-start', gap: 7, color: palette.accent, fontSize: 12.5, lineHeight: 1.55 }}>
+          <span aria-hidden="true" style={{ display: 'flex', marginTop: 1 }}><Icon d={ICON.info} size={15} /></span>
+          <span>{freshness.warning_ar}</span>
+        </div>
+      )}
     </div>
   )
 }

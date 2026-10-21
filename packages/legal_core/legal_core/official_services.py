@@ -99,7 +99,7 @@ def _service_from_item(item: object, verified_on: str) -> OfficialService | None
     action_url = _allowed_url(item.get("ServiceURL")) or info_url
     steps = _html_items(item.get("Steps"))[:8]
     requirements = _html_items(item.get("Requirements"))[:6]
-    parts = [f"بحسب كتالوج وزارة العدل الرسمي، {description.rstrip('.، ')}."]
+    parts = [f"بحسب دليل الخدمات المنشور حاليًا من وزارة العدل، {description.rstrip('.، ')}."]
     if steps:
         parts.append("خطوات الخدمة: " + "؛ ".join(steps) + ".")
     if requirements:

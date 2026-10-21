@@ -8,8 +8,7 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    dockerCommand: >-
-      sh -c "alembic upgrade head && python -m legal_core.cli bootstrap && exec python deploy/render/run_api_and_worker.py"
+    dockerCommand: python deploy/render/run_api_and_worker.py
     healthCheckPath: /readyz
     envVars:
       - key: DATABASE_URL

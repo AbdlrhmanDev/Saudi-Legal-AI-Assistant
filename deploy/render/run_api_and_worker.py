@@ -14,6 +14,11 @@ import time
 
 
 def main() -> int:
+    # Render's Docker command is executed directly rather than through a shell. Keep the
+    # idempotent release steps here so fresh databases are ready before the API starts.
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True)
+    subprocess.run([sys.executable, "-m", "legal_core.cli", "bootstrap"], check=True)
+
     port = os.environ.get("PORT", "10000")
     processes = [
         subprocess.Popen([sys.executable, "-m", "worker.main"]),

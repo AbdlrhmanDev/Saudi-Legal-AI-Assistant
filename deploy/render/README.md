@@ -13,4 +13,9 @@ The service runs migrations and the idempotent production bootstrap before each 
 service sleeps after inactivity and catches up a missed nightly run after it wakes. Free Render
 Postgres expires after 30 days and has no backups, so this layout is for assessment/demo use only.
 
+On startup, the demo also imports any missing approved baseline instruments from their current
+official Bureau of Experts pages (currently Traffic Law and Anti-Concealment Law). Existing active
+versions are skipped, and a temporary source failure is retried on a later start without preventing
+the API from coming online.
+
 For sustained production, upgrade Postgres and split the API and worker into separate paid services.

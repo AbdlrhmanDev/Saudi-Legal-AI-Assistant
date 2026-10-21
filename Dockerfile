@@ -29,6 +29,7 @@ COPY packages ./packages
 COPY services ./services
 COPY db ./db
 COPY deploy ./deploy
+COPY scripts ./scripts
 COPY fixtures ./fixtures
 COPY tests ./tests
 COPY alembic.ini ./

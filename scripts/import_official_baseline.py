@@ -23,7 +23,7 @@ from legal_core.db import session_scope
 from legal_core.embeddings import get_embedder
 from legal_core.ingestion import DocumentMetadata, ingest_document
 from legal_core.legal_dates import resolve_effective_date
-from legal_core.models import DocumentVersion, SourceRegistry, UpdateCandidate
+from legal_core.models import DocumentVersion, LegalInstrument, SourceRegistry, UpdateCandidate
 from legal_core.monitor import canonicalize_url, make_http_fetcher
 from legal_core.parser import document_text, parse_boe_html
 from legal_core.review import approve_candidate
@@ -80,7 +80,34 @@ def _source(session) -> SourceRegistry:
     return source
 
 
-def import_document(document: OfficialDocument, *, approve: bool) -> dict:
+def _active_version(document: OfficialDocument) -> bool:
+    """Return true when this official instrument is already serving the RAG index."""
+    with session_scope() as session:
+        return (
+            session.scalar(
+                select(DocumentVersion.id)
+                .join(LegalInstrument, LegalInstrument.id == DocumentVersion.instrument_id)
+                .where(
+                    LegalInstrument.official_title_ar == document.title,
+                    DocumentVersion.review_status == "approved",
+                    DocumentVersion.index_active.is_(True),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+
+def import_document(document: OfficialDocument, *, approve: bool, if_missing: bool = False) -> dict:
+    if if_missing and _active_version(document):
+        return {
+            "title": document.title,
+            "status": "already_active",
+            "duplicate": True,
+            "articles": None,
+            "effective_from": document.expected_effective_from.isoformat(),
+            "source_url": canonicalize_url(document.url),
+        }
     settings = get_settings()
     content = make_http_fetcher(settings)(document.url)
     parsed = parse_boe_html(content)
@@ -167,8 +194,19 @@ def import_document(document: OfficialDocument, *, approve: bool) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--approve", action="store_true", help="approve and add the checked texts to the active RAG index")
+    parser.add_argument(
+        "--if-missing",
+        action="store_true",
+        help="skip each official instrument that already has an approved active version",
+    )
     args = parser.parse_args()
-    print(json.dumps([import_document(doc, approve=args.approve) for doc in DOCUMENTS], ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            [import_document(doc, approve=args.approve, if_missing=args.if_missing) for doc in DOCUMENTS],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

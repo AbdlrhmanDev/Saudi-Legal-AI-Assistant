@@ -18,6 +18,17 @@ def main() -> int:
     # idempotent release steps here so fresh databases are ready before the API starts.
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True)
     subprocess.run([sys.executable, "-m", "legal_core.cli", "bootstrap"], check=True)
+    # Seed the public demo with a small real-law baseline. The importer fetches the
+    # current consolidated pages from the official Bureau of Experts portal, verifies
+    # their structure/effective dates, then indexes only missing approved instruments.
+    # A temporary upstream failure must not take the API offline; the next cold start
+    # retries while an already active baseline is skipped without another download.
+    baseline = subprocess.run(
+        [sys.executable, "scripts/import_official_baseline.py", "--approve", "--if-missing"],
+        check=False,
+    )
+    if baseline.returncode:
+        print(f"official baseline import deferred (exit {baseline.returncode})", flush=True)
 
     port = os.environ.get("PORT", "10000")
     processes = [

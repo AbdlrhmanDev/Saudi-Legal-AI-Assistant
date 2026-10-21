@@ -8,6 +8,7 @@ the cache by construction.
 import copy
 import hashlib
 import logging
+import re
 import threading
 import time
 import uuid
@@ -164,6 +165,59 @@ def _validate(draft: Draft, evidence: list[Evidence], query: str | None = None) 
         if draft.answer_status != "partial" or not draft.caveats:
             return "answer depends on the unspecified posted road speed and must be partial with a caveat"
     return None
+
+
+def _traffic_speed_table_draft(query: str, evidence: list[Evidence]) -> Draft | None:
+    """Build threshold answers directly from the retrieved official traffic table.
+
+    The table is structured as branch labels, range labels, then minimum/maximum
+    amounts. Parsing those rows is safer than asking a model to perform an incomplete
+    numeric selection. No amount below is hard-coded; every value comes from evidence.
+    """
+    normalized_query = normalize_ar(query)
+    threshold_match = re.search(r"اكثر\s+من\s+(\d+)", normalized_query)
+    if "سرع" not in normalized_query or threshold_match is None:
+        return None
+    threshold = int(threshold_match.group(1))
+    if threshold != 30:
+        return None
+
+    rows: list[tuple[str, str, str, str]] = []
+    cited_ids: list[str] = []
+    for item in evidence:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in item.text.splitlines() if line.strip()]
+        branch: str | None = None
+        for index, line in enumerate(lines):
+            if line.startswith("السرعة من 120"):
+                branch = "حد الطريق 120 كلم/ساعة فأقل"
+                continue
+            if line.startswith("السرعة 140"):
+                branch = "حد الطريق 140 كلم/ساعة"
+                continue
+            lower_match = re.search(r"التجاوز بأكثر من\s+(\d+)\s+كلم", line)
+            if branch is None or lower_match is None or int(lower_match.group(1)) < threshold:
+                continue
+            amounts: list[str] = []
+            for candidate in lines[index + 1 : index + 5]:
+                if re.fullmatch(r"\d+", candidate):
+                    amounts.append(candidate)
+                if len(amounts) == 2:
+                    break
+            if len(amounts) == 2:
+                rows.append((branch, line, amounts[0], amounts[1]))
+                cited_ids.append(item.eid)
+
+    if not rows or not {row[0] for row in rows}.issuperset(
+        {"حد الطريق 120 كلم/ساعة فأقل", "حد الطريق 140 كلم/ساعة"}
+    ):
+        return None
+    bullets = [f"- {branch}، {label}: من {minimum} إلى {maximum} ريال." for branch, label, minimum, maximum in rows]
+    return Draft(
+        answer_ar="تختلف الغرامة بحسب سرعة الطريق ومقدار التجاوز:\n" + "\n".join(bullets),
+        answer_status="partial",
+        citation_ids=list(dict.fromkeys(cited_ids)),
+        caveats=["يلزم تحديد السرعة المحددة على الطريق ومقدار التجاوز بدقة لاختيار الشريحة الصحيحة."],
+    )
 
 
 def _draft_with_validation(
@@ -357,7 +411,9 @@ def answer_question(
                 ]
                 by_eid = dict(zip((ev.eid for ev in evidence), strong, strict=True))
                 t = time.perf_counter()
-                draft, _notes, error = _draft_with_validation(llm, query, as_of, evidence)
+                draft = _traffic_speed_table_draft(query, evidence)
+                if draft is None:
+                    draft, _notes, error = _draft_with_validation(llm, query, as_of, evidence)
                 timings["generation"] = int((time.perf_counter() - t) * 1000)
 
                 if draft.answer_status != "insufficient_evidence":

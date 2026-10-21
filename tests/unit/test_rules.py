@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from legal_core.answer import _draft_with_validation, _validate
+from legal_core.answer import _draft_with_validation, _traffic_speed_table_draft, _validate
 from legal_core.config import Settings
 from legal_core.embeddings import HashEmbedder
 from legal_core.llm import Draft, Evidence, ExtractiveAnswerModel, build_user_payload, focused_excerpt
@@ -108,6 +108,30 @@ def test_validation_requires_every_traffic_table_branch_for_unspecified_road_lim
         ["يلزم تحديد سرعة الطريق."],
     )
     assert _validate(complete, traffic, "السرعة أكثر من 30 كم؟") is None
+
+
+def test_traffic_speed_table_answer_is_derived_from_every_matching_official_row():
+    traffic = [
+        Evidence(
+            "E1",
+            "نظام المرور",
+            "الجدول رقم (8)",
+            None,
+            "السرعة من 120 كلم/ساعة فأقل\n"
+            "التجاوز بأكثر من 30 كلم/ساعة إلى 40 كلم/ساعة\n800\n1000\n"
+            "التجاوز بأكثر من 40 كلم/ساعة إلى 50 كلم/ساعة\n1200\n1500\n"
+            "التجاوز بأكثر من 50 كلم/ساعة\n1500\n2000\n"
+            "السرعة 140 كلم/ساعة\n"
+            "التجاوز بأكثر من 30 كلم/ساعة\n1500\n2000",
+            date(2008, 5, 5),
+            None,
+        )
+    ]
+    draft = _traffic_speed_table_draft("السرعه اكثر من 30؟ كم المخالفه", traffic)
+    assert draft is not None and draft.answer_status == "partial" and draft.citation_ids == ["E1"]
+    for amount in ("800", "1000", "1200", "1500", "2000"):
+        assert amount in draft.answer_ar
+    assert "120 كلم" in draft.answer_ar and "140 كلم" in draft.answer_ar
 
 
 class _ScriptedModel:

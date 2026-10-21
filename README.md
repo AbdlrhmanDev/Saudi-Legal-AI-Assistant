@@ -315,7 +315,14 @@ tests/                 Unit, integration, security workflows and evaluation harn
 docs/                  Architecture, source policy and API notes
 ```
 
-## Railway live demo
+## Deployment
+
+For a no-cost evaluator deployment, the root [`render.yaml`](render.yaml) Blueprint creates a
+single Render web service (React UI + FastAPI + nightly worker) and a PostgreSQL/pgvector database.
+See the [Render deployment guide](deploy/render/README.md). The free service sleeps when idle and
+the free database expires after 30 days, so use the split-service layout below for sustained use.
+
+### Railway
 
 The recommended Railway layout runs a pgvector database, a stateless API with
 2+ replicas, exactly one worker (nightly sync + job queue) and the React

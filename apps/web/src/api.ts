@@ -1,6 +1,8 @@
 // Thin client for the backend described in docs/api.md.
 
-const BASE: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+// Production is served by the API container on the same origin. Local Vite development keeps
+// using the standalone backend unless VITE_API_URL is explicitly provided.
+const BASE: string = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:8000')
 const TOKEN_KEY = 'legal-ai-token'
 
 export class ApiError extends Error {

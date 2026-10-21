@@ -1,3 +1,15 @@
+FROM node:22-alpine AS web-build
+
+WORKDIR /web
+COPY apps/web/package.json apps/web/package-lock.json ./
+RUN npm ci
+COPY apps/web ./
+
+# The production bundle calls the API on the same Render origin.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
 FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.19 /uv /usr/local/bin/uv
@@ -20,6 +32,7 @@ COPY deploy ./deploy
 COPY fixtures ./fixtures
 COPY tests ./tests
 COPY alembic.ini ./
+COPY --from=web-build /web/dist /app/web-dist
 RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home app && mkdir -p /app/var/storage && chown -R app:app /app/var

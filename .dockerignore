@@ -3,6 +3,9 @@
 .git
 var
 **/__pycache__
+**/node_modules
+**/dist
+*.egg-info
 .pytest_cache
 .ruff_cache
 *.pdf

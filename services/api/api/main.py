@@ -1,14 +1,17 @@
 import logging
+import os
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.deps import ApiError
@@ -133,6 +136,12 @@ def create_app() -> FastAPI:
     app.include_router(health.probes)
     for module in (health, auth, chat, laws, admin):
         app.include_router(module.router)
+
+    # Render's compact deployment serves the built React SPA and API from one HTTPS origin.
+    # The directory is absent during normal local API development and unit tests.
+    web_dist = Path(os.environ.get("WEB_DIST_DIR", "/app/web-dist"))
+    if web_dist.is_dir():
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
     return app
 
 

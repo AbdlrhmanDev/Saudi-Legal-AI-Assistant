@@ -1,0 +1,72 @@
+services:
+  - type: web
+    name: saudi-legal-ai-assistant-abdlrhman
+    runtime: docker
+    plan: free
+    region: frankfurt
+    repo: https://github.com/AbdlrhmanDev/Saudi-Legal-AI-Assistant.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: >-
+      sh -c "alembic upgrade head && python -m legal_core.cli bootstrap && exec python deploy/render/run_api_and_worker.py"
+    healthCheckPath: /readyz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: saudi-legal-postgres-abdlrhman
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://saudi-legal-ai-assistant-abdlrhman.onrender.com
+      - key: EMBEDDING_PROVIDER
+        value: openai
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: EMBEDDING_DIM
+        value: "1536"
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ALLOW_FIXTURE_SOURCES
+        value: "false"
+      - key: SYNC_TIMEZONE
+        value: Asia/Riyadh
+      - key: SYNC_HOUR
+        value: "0"
+      - key: SYNC_MINUTE
+        value: "0"
+      - key: SYNC_SCHEDULER
+        value: "true"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: DB_POOL_SIZE
+        value: "2"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: API_THREAD_LIMIT
+        value: "20"
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"
+      - key: RATE_LIMIT_BACKEND
+        value: database
+      - key: TRACE_STORE_QUERY_TEXT
+        value: "false"
+
+databases:
+  - name: saudi-legal-postgres-abdlrhman
+    plan: free
+    region: frankfurt
+    databaseName: saudi_legal_ai
+    user: saudi_legal_ai
+    postgresMajorVersion: "16"

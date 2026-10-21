@@ -122,7 +122,7 @@ def _evidence_text(item: RetrievedArticle, settings: Settings) -> str:
     return item.text if len(item.text) <= settings.max_evidence_chars else item.best_chunk_text
 
 
-def _validate(draft: Draft, evidence: list[Evidence]) -> str | None:
+def _validate(draft: Draft, evidence: list[Evidence], query: str | None = None) -> str | None:
     """Return a reason when the draft violates the grounding contract (PRD 9.1 step 7)."""
     by_id = {ev.eid: ev for ev in evidence}
     if draft.answer_status not in ANSWER_STATUSES:
@@ -143,6 +143,18 @@ def _validate(draft: Draft, evidence: list[Evidence]) -> str | None:
     stray = mentioned_article_numbers(draft.answer_ar) - allowed
     if stray:
         return f"answer mentions article numbers {sorted(stray)} that are not supported by the cited evidence"
+    # The official traffic fine table separates roads posted at 120 or less from roads
+    # posted at 140. A vague speeding question must not silently select one branch.
+    # This only applies when both branch labels are present in the retrieved evidence.
+    normalized_query = normalize_ar(query or "")
+    evidence_text = "\n".join(ev.text for ev in evidence)
+    speed_table = "السرعة من 120" in evidence_text and "السرعة 140" in evidence_text
+    unspecified_road_limit = "120" not in (query or "") and "140" not in (query or "")
+    if "سرع" in normalized_query and speed_table and unspecified_road_limit:
+        if "120" not in draft.answer_ar or "140" not in draft.answer_ar:
+            return "answer must cover both posted-speed branches (120-or-less and 140) found in the evidence"
+        if draft.answer_status != "partial" or not draft.caveats:
+            return "answer depends on the unspecified posted road speed and must be partial with a caveat"
     return None
 
 
@@ -159,7 +171,7 @@ def _draft_with_validation(
             log.warning("llm_failed", extra={"error": type(exc).__name__, "attempt": attempt})
             notes.append(f"llm_error:{type(exc).__name__}")
             break
-        problem = _validate(draft, evidence)
+        problem = _validate(draft, evidence, query)
         if problem is None:
             return draft, notes, None
         notes.append(f"validation_failed:{problem}")
@@ -292,7 +304,7 @@ def answer_question(
     cached = None
     if settings.answer_cache_size > 0:
         cache_key = (
-            "structured-answer-v7",
+            "structured-answer-v8",
             normalize_ar(query),
             domain,
             as_of,

@@ -84,6 +84,31 @@ def test_citation_validation_rejects_fabricated_references():
     assert _validate(Draft("", "insufficient_evidence", []), EVIDENCE) is None
 
 
+def test_validation_requires_every_traffic_table_branch_for_unspecified_road_limit():
+    traffic = [
+        Evidence(
+            "E1",
+            "نظام المرور",
+            "الجدول رقم (8)",
+            None,
+            "السرعة من 120 كلم/ساعة فأقل\nالتجاوز بأكثر من 30\n800\n1000\n"
+            "السرعة 140 كلم/ساعة\nالتجاوز بأكثر من 30\n1500\n2000",
+            date(2008, 5, 5),
+            None,
+        )
+    ]
+    incomplete = Draft("الغرامة من 800 إلى 1000 ريال.", "grounded", ["E1"])
+    assert "both posted-speed branches" in _validate(incomplete, traffic, "السرعة أكثر من 30 كم؟")
+
+    complete = Draft(
+        "- إذا كان حد الطريق 120 فأقل: بحسب مقدار التجاوز.\n- إذا كان حد الطريق 140: بحسب مقدار التجاوز.",
+        "partial",
+        ["E1"],
+        ["يلزم تحديد سرعة الطريق."],
+    )
+    assert _validate(complete, traffic, "السرعة أكثر من 30 كم؟") is None
+
+
 class _ScriptedModel:
     model_name = "scripted"
 

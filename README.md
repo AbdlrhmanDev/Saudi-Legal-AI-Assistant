@@ -22,7 +22,12 @@ An Arabic, source-grounded legal RAG application for Saudi regulatory documents.
 | Freshness contract in every answer and in the UI (`/api/v1/freshness`) | Implemented |
 | Operator dashboard: sync runs, quarantine, generations, rollback; manual review as escape hatch | Implemented |
 | Horizontal scaling: stateless API, shared rate limits, proxy-aware client IPs, answer cache | Implemented — [scaling.md](docs/scaling.md) |
-| Arabic React UI for chat, corpus, review and operations | Implemented |
+| **Official source registry: all 39 approved Saudi sources** with connectors (RSS, document listings, MOJ judgments API, change detection), live health probing, per-source logs | Implemented — [official_sources.md](docs/official_sources.md) |
+| **Saudi-dialect understanding**: Arabizi, misspellings, mixed Arabic-English; 56 legal intents, entity extraction and formal-Arabic query expansion | Implemented — [dialect_and_scope.md](docs/dialect_and_scope.md) |
+| **Strict legal-domain guard**: non-legal questions get exactly «غير متوفر معلومات عن ذا الشي»; no evidence gives exactly «لم أجد معلومات موثوقة وكافية…» | Implemented |
+| Answers structured as **الجواب / وش تقدر تسوي؟ / المصدر الرسمي** with clickable official links | Implemented |
+| Judicial decisions stored apart from legislation (MOJ, Board of Grievances), shown as non-binding; Istitlaa drafts never published | Implemented |
+| Arabic React UI for chat, corpus, review, **official sources dashboard** and operations | Implemented |
 | Private persistent chat history | Implemented in browser storage; isolated by user ID (and by guest tab), last 50 completed messages, with a clear-chat action |
 | Related government-service cards | Implemented by querying the current official MOJ/Najiz directory for each service request; no local catalog or stale fallback; separate from legal citations |
 | Authentication, audit events, traces, worker heartbeat and health checks | Implemented |
@@ -178,6 +183,38 @@ Use `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env` for the reviewer account. If 
 
 The full scenario list (T01–T10) is automated in [`tests/integration/test_nightly_sync.py`](tests/integration/test_nightly_sync.py); see [docs/autonomous_sync.md](docs/autonomous_sync.md) for the demo script and traceability.
 
+## Official sources and Saudi-dialect questions
+
+All 39 entries of the approved source list live in one code-reviewed catalog
+(`packages/legal_core/legal_core/source_catalog.py`), mirrored into `source_registry` by
+`python -m legal_core.cli seed-sources` (part of `bootstrap`). Each source has a connector:
+
+| Connector | Used for | What it does |
+|---|---|---|
+| `rss` | Umm Al-Qura decisions and regulations | Feed items, full decision pages |
+| `html_listing` | Bureau of Experts (517 consolidated laws), ministries and authorities that publish document lists, Board of Grievances collections | Links matching per-source document rules; Bureau of Experts pages linked from ministry sites are attributed to the Bureau |
+| `moj_judgments_api` | Ministry of Justice judgments (≈54,000 published) | Judgments stored in `judicial_decisions`, never as legislation |
+| `page_watch` | JavaScript-only listings, news, directories, Istitlaa | Detects and logs changes of the visible page; publishes nothing |
+| `none` | SAMA rulebook (robots.txt disallows all agents) | Probed for reachability only |
+
+Every connector run writes a `source_sync_logs` row and the source's health (`available`, `degraded`,
+`unavailable`, `blocked`, `robots_disallowed`). A blocked or failing source is reported as such and never
+as synchronized. Per-source politeness caps defer the rest of a large listing to later nights, and
+consolidated laws already held are re-read weekly so amendments become new candidates. Everything still
+passes the deterministic release gate; drafts, news and directories are excluded whatever their titles say.
+
+```bash
+uv run python -m legal_core.cli probe-sources            # check all 39 endpoints now and save their health
+uv run python -m legal_core.cli probe-sources --dry-run  # print the report without saving it
+uv run python -m legal_core.cli sync-now                 # run the nightly pipeline immediately
+```
+
+Questions are analysed before retrieval (`legal_core/intent.py`): Saudi dialect, spelling mistakes, Arabizi
+and English are mapped to legal intents ("مديري فصلني" → termination of employment; "المؤجر يبي يطلعني" →
+eviction), facts that change the rule are identified, and a formal legal query is searched when the user's own
+words find nothing. Non-legal questions receive exactly «غير متوفر معلومات عن ذا الشي». See
+[dialect_and_scope.md](docs/dialect_and_scope.md) for the signals, the decision rule and its tests.
+
 ## How the RAG pipeline works
 
 1. The query date and optional legal domain filter the corpus to **approved** versions effective on that date.
@@ -295,7 +332,8 @@ See [`.env.example`](.env.example). Important variables:
 |---|---|
 | `LLM_PROVIDER`, `LLM_MODEL` | `extractive` for offline reproducibility or `openai` for grounded generation |
 | `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | `hash` or `openai`; model changes require re-indexing |
-| `SOURCE_ALLOWLIST` | Hosts allowed for monitored acquisition |
+| `SOURCE_ALLOWLIST`, `INCLUDE_CATALOG_HOSTS` | Hosts allowed for monitored acquisition (configured hosts plus the catalog's reviewed hosts) |
+| `CONNECTOR_MAX_ACQUISITIONS_PER_SOURCE`, `CONNECTOR_MAX_JUDGMENTS_PER_RUN`, `CONNECTOR_REFRESH_DAYS` | Connector politeness and amendment re-checks |
 | `ALLOW_FIXTURE_SOURCES` | Must remain `false` outside automated tests |
 | `TRACE_STORE_QUERY_TEXT`, `TRACE_RETENTION_DAYS` | Trace privacy and retention |
 | `MIN_LEXICAL_COVERAGE`, `MIN_VECTOR_SIMILARITY` | Retrieval evidence thresholds |
@@ -337,7 +375,12 @@ credentials private rather than publishing them in this README.
 
 ## Known limitations
 
-- Coverage starts with the official Umm Al-Qura decisions-and-regulations feed and grows through nightly synchronization; this MVP does not claim complete coverage of all Saudi law.
+- Coverage grows through nightly synchronization from the integrated official sources, within per-source politeness limits (for example 10 Bureau of Experts laws per night, so its 517-law archive takes about seven weeks to read once); this system does not claim complete coverage of all Saudi law.
+- Of the 39 approved sources, several cannot be harvested automatically: `my.gov.sa` answers 403 to automated clients, the SAMA rulebook's robots.txt disallows all agents, and JavaScript-only listings (ZATCA, CMA, NCA, SAIP, REGA, GOSI, Commerce, HRSD, Health, Istitlaa) are watched for changes only. The measured status of every source is in [official_sources.md](docs/official_sources.md).
+- The Ministry of Justice legislation search API rejects automated requests (firewall); laws are taken from the Bureau of Experts instead. Its judgments API is integrated but rate-sensitive, so requests are spaced 6 seconds apart.
+- Reuse terms of the official sites have not been reviewed by counsel for this deployment (`licensing_status = public_terms_unreviewed`). Disable any source from the official sources screen if its terms require it.
+- A newly discovered law is published only when its effective date is evidenced in the official text, or (Bureau of Experts consolidated laws) when the Bureau's official status is «ساري» — then it is treated as verified in force from the retrieval date only, so historical as-of questions do not use it; many sector documents (forms, guides, requirements without a commencement clause) are therefore quarantined with `EFFECTIVE_DATE_MISSING` for review rather than answered from.
+- Dialect understanding uses reviewed cue lists for 56 intents; phrasings outside them still reach retrieval with the user's own words, and a semantic embedding model is needed for paraphrases that share no vocabulary.
 - The deterministic hash embedding provider is useful for repeatability, not semantic-quality claims. A real embedding model is needed for paraphrases with little shared vocabulary.
 - OpenAI generation is implemented but requires the evaluator's own API key and a live evaluation run.
 - Scanned PDFs requiring OCR are rejected with a clear error and are outside this MVP.
@@ -355,5 +398,7 @@ credentials private rather than publishing them in this README.
 - [Autonomous nightly synchronization (PRD v2)](docs/autonomous_sync.md)
 - [Scaling and stability for 1,000+ users](docs/scaling.md)
 - [Source governance](docs/source_policy.md)
+- [Official source registry and measured status](docs/official_sources.md)
+- [Saudi dialect, domain guard and answer policy](docs/dialect_and_scope.md)
 - [Frontend/API integration](docs/api.md)
 - [Evaluation report](tests/evaluation/results/report.md)

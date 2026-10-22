@@ -10,15 +10,25 @@ guessed.
 from dataclasses import dataclass, field
 from datetime import date
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, not_, select
 from sqlalchemy.orm import Session
 
 from legal_core.agent import AgentProposal
 from legal_core.config import Settings
-from legal_core.legal_dates import EffectiveDate, resolve_effective_date
-from legal_core.models import PUBLISHABLE_CLASSIFICATIONS, DocumentVersion, UpdateCandidate
+from legal_core.legal_dates import DateEvidence, EffectiveDate, resolve_effective_date
+from legal_core.models import (
+    NON_LEGISLATIVE_KINDS,
+    PUBLISHABLE_CLASSIFICATIONS,
+    DocumentVersion,
+    SourceSnapshot,
+    UpdateCandidate,
+)
+from legal_core.parser import parse_boe_metadata
 from legal_core.review import authoritative_versions
+
+RIYADH = ZoneInfo("Asia/Riyadh")
 
 # Keyword rules cannot tell what a bare decree/decision/circular does; the agent may classify these.
 INCONCLUSIVE_CLASSIFICATIONS = ("royal_decree", "decision", "circular")
@@ -84,6 +94,15 @@ def evaluate(
     def fail(code: str, detail: str) -> GateDecision:
         decision.reasons.append((code, detail))
         return decision
+
+    source = candidate.source
+    if source is not None and source.document_kind in NON_LEGISLATIVE_KINDS:
+        decision.outcome = "exclude"
+        checks["legislative_source"] = False
+        return fail(
+            "NOT_A_LEGAL_CHANGE",
+            f"{source.document_kind} sources (for example Istitlaa drafts) never enter the authoritative corpus",
+        )
 
     rules_class = candidate.classification
     agent_class = proposal.classification
@@ -160,6 +179,13 @@ def evaluate(
         published_at=version.published_at,
         consolidated_amendment=decision.kind == "amendment",
     )
+    if effective.value is None and decision.kind != "repeal":
+        verified = _publisher_status(session, candidate, version, effective)
+        if verified is not None:
+            if verified.reason_code:
+                return fail(verified.reason_code, verified.detail or "")
+            effective = verified
+            checks["publisher_status"] = True
     decision.effective = effective
     if effective.value is not None and version.effective_from and version.effective_from != effective.value:
         effective.reason_code = "CONFLICTING_EFFECTIVE_DATES"
@@ -186,14 +212,50 @@ def evaluate(
     return decision
 
 
+def _publisher_status(
+    session: Session, candidate: UpdateCandidate, version: DocumentVersion, unresolved: EffectiveDate
+) -> EffectiveDate | None:
+    """Consolidated laws on the Bureau of Experts portal rarely state a commencement date in their text
+    (old statutes, many amendments), but the Bureau publishes each law's official status. A law marked
+    «ساري» is verified in force *as of the day its official page was retrieved*: that day becomes the
+    version's start, so the text is never presented as in force on any earlier date. Any other status
+    blocks publication. Returns None when this rule does not apply."""
+    source = candidate.source
+    if source is None or source.source_key != "boe" or version.snapshot_id is None:
+        return None
+    snapshot = session.get(SourceSnapshot, version.snapshot_id)
+    metadata = parse_boe_metadata(snapshot.content) if snapshot else None
+    if metadata is None or not metadata.status:
+        return None
+    if metadata.status != "ساري":
+        return EffectiveDate(None, "STATUS_NOT_IN_FORCE",
+                             f"the Bureau of Experts lists this law as «{metadata.status}»", unresolved.evidence)  # fmt: skip
+    if metadata.published_at and version.published_at is None:
+        version.published_at = metadata.published_at
+    verified_on = snapshot.retrieved_at.astimezone(RIYADH).date()
+    span = (
+        f"هيئة الخبراء بمجلس الوزراء: الحالة «ساري» كما في {verified_on.isoformat()}"
+        + (f"؛ تاريخ النشر {metadata.published_at.isoformat()}" if metadata.published_at else "")
+    )
+    return EffectiveDate(verified_on, None, None, [DateEvidence(verified_on, "publisher_status", span, "publisher")])
+
+
 def unprocessed_candidates(session: Session, limit: int) -> list[UpdateCandidate]:
-    """Feed/agent candidates the gate has not decided yet, oldest first."""
+    """Feed/agent candidates the gate has not decided yet, oldest first. Documents whose fetch was
+    deferred by a connector's politeness budget (backlog) are not judged until they are fetched."""
+    backlog = and_(
+        UpdateCandidate.state == "candidate",
+        UpdateCandidate.document_ref.is_not(None),
+        UpdateCandidate.proposed_version_id.is_(None),
+        UpdateCandidate.classification.not_in(("irrelevant", "draft", "notice")),
+    )
     return list(
         session.scalars(
             select(UpdateCandidate)
             .where(
                 UpdateCandidate.origin.in_(("feed", "agent")),
                 UpdateCandidate.state.in_(("candidate", "retrieved", "needs_review", "failed")),
+                not_(backlog),
             )
             .order_by(UpdateCandidate.discovered_at, UpdateCandidate.id)
             .limit(limit)

@@ -120,12 +120,57 @@ export type Citation = {
   effective_from: string
   effective_to: string | null
   legal_status: string
+  issuing_authority?: string | null
+  status_basis?: 'publisher_status' | null
   is_test_data: boolean
+}
+
+export type AnswerSections = {
+  headings: { answer: string; actions: string; sources: string }
+  answer: string
+  actions: { kind: 'legal_step' | 'fact_to_confirm'; text: string; article_ids: string[] }[]
+  sources: {
+    law_title_ar: string
+    article_label: string | null
+    article_number: string | null
+    issuing_authority: string | null
+    legal_status_ar: string
+    effective_from: string
+    official_url: string | null
+  }[]
+}
+
+export type JudicialReference = {
+  id: string
+  title: string
+  material_type: string
+  court_name: string | null
+  court_level: string
+  city: string | null
+  hijri_date: string | null
+  judgment_date: string | null
+  finality_status: string
+  source_url: string | null
+  excerpt: string
+  binding: false
+  note_ar: string
+  is_test_data: boolean
+}
+
+export type DraftReference = { title: string; official_url: string | null; published_at: string | null; legal_status: 'draft'; note_ar: string; is_test_data: boolean }
+
+export type QueryAnalysis = {
+  in_scope: boolean
+  register: 'saudi_dialect' | 'msa' | 'english' | 'mixed' | 'arabizi'
+  intents: { id: string; label_ar: string; domain: string; score: number }[]
+  domain: string | null
+  facts_to_confirm: string[]
+  retrieval_expansion_used: boolean
 }
 
 export type ChatAnswer = {
   answer_ar: string
-  answer_status: 'grounded' | 'partial' | 'insufficient_evidence'
+  answer_status: 'grounded' | 'partial' | 'insufficient_evidence' | 'out_of_scope'
   as_of_date: string
   citations: Citation[]
   caveats: string[]
@@ -138,6 +183,11 @@ export type ChatAnswer = {
   source_health?: SourceHealth
   // Official transaction links are helpful actions, not evidence for the legal answer.
   related_services?: RelatedService[]
+  // الجواب / وش تقدر تسوي؟ / المصدر الرسمي (absent on answers saved before it existed).
+  answer_sections?: AnswerSections | null
+  related_judicial?: JudicialReference[]
+  related_drafts?: DraftReference[]
+  query_analysis?: QueryAnalysis
 }
 
 export type RelatedService = {
@@ -321,6 +371,63 @@ export type Source = {
   last_checked_at: string | null
   last_success_at: string | null
   last_error: string | null
+  is_test_data?: boolean
+  source_key?: string | null
+  catalog_numbers?: number[]
+  name_ar?: string | null
+  official_url?: string | null
+  category?: string | null
+  authority_tier?: 'primary' | 'sectoral' | 'judicial' | 'supporting'
+  document_kind?: string
+  connector_type?: 'rss' | 'html_listing' | 'moj_judgments_api' | 'page_watch' | 'none'
+  consolidated_into?: string | null
+  integration_status?: 'integrated' | 'discovery_only' | 'not_integrated' | 'consolidated'
+  health_status?: 'unknown' | 'available' | 'degraded' | 'unavailable' | 'blocked' | 'robots_disallowed'
+  health_detail?: string | null
+  last_http_status?: number | null
+  last_probe_at?: string | null
+  access_notes?: string | null
+  licensing_status?: string
+}
+
+export type SourceLog = {
+  id: string
+  source_id: string
+  source_name: string | null
+  sync_run_id: string | null
+  started_at: string
+  finished_at: string | null
+  status: 'changed' | 'no_change' | 'failed' | 'skipped'
+  connector_type: string
+  http_status: number | null
+  counts: Record<string, number>
+  error: string | null
+}
+
+export type Dashboard = {
+  sources: {
+    registered: number
+    catalog_entries: number
+    enabled: number
+    integrated: number
+    discovery_only: number
+    not_integrated: number
+    consolidated: number
+    available: number
+    degraded: number
+    unavailable: number
+    blocked: number
+    never_checked: number
+    items: Source[]
+  }
+  corpus: { instruments: number; versions: number; indexed_versions: number; indexed_articles: number; judicial_records: number; relationships: number; drafts_tracked: number }
+  last_successful_sync: SyncRun | null
+  updates_last_7_days: { discovered: number; new_instruments: number; amended_instruments: number; repealed_instruments: number; watched_pages_changed: number }
+  verification_queue: { open_quarantine: number; needs_review: number; deferred_backlog: number; failed_fetches: number }
+  jobs: { failed: number; queued: number }
+  quality_last_30_days: { questions: number; by_status: Record<string, number>; answer_rate: number | null; cited_answer_rate: number | null; out_of_scope_rate: number | null }
+  recent_source_logs: SourceLog[]
+  timezone: string
 }
 
 export type Trace = {

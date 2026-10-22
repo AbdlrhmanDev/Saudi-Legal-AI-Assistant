@@ -6,11 +6,13 @@ from legal_core.models import (
     DocumentVersion,
     IndexGeneration,
     IngestionJob,
+    JudicialDecision,
     LegalInstrument,
     QuarantineEvent,
     QueryTrace,
     ReviewEvent,
     SourceRegistry,
+    SourceSyncLog,
     SyncRun,
     UpdateCandidate,
     User,
@@ -169,7 +171,65 @@ def source(s: SourceRegistry) -> dict:
         "last_success_at": _iso(s.last_success_at),
         "last_error": s.last_error,
         "is_test_data": s.is_test_data,
+        "source_key": s.source_key,
+        "catalog_numbers": s.catalog_numbers or [],
+        "name_ar": s.name_ar,
+        "official_url": s.official_url,
+        "category": s.category,
+        "authority_tier": s.authority_tier,
+        "document_kind": s.document_kind,
+        "connector_type": s.connector_type,
+        "default_domain": s.default_domain,
+        "consolidated_into": s.consolidated_into,
+        "integration_status": s.integration_status,
+        "health_status": s.health_status,
+        "health_detail": s.health_detail,
+        "last_http_status": s.last_http_status,
+        "last_probe_at": _iso(s.last_probe_at),
+        "access_notes": s.access_notes,
+        "licensing_status": s.licensing_status,
     }
+
+
+def source_log(row: SourceSyncLog, source_name: str | None = None) -> dict:
+    return {
+        "id": str(row.id),
+        "source_id": str(row.source_id),
+        "source_name": source_name,
+        "sync_run_id": str(row.sync_run_id) if row.sync_run_id else None,
+        "started_at": _iso(row.started_at),
+        "finished_at": _iso(row.finished_at),
+        "status": row.status,
+        "connector_type": row.connector_type,
+        "http_status": row.http_status,
+        "counts": row.counts or {},
+        "error": row.error,
+    }
+
+
+def judicial(record: JudicialDecision, *, detail: bool = False) -> dict:
+    data = {
+        "id": str(record.id),
+        "source_id": str(record.source_id),
+        "title": record.title,
+        "material_type": record.material_type,
+        "court_name": record.court_name,
+        "court_level": record.court_level,
+        "city": record.city,
+        "case_number": record.case_number,
+        "judgment_number": record.judgment_number,
+        "hijri_date": record.hijri_date,
+        "judgment_date": record.judgment_date.isoformat() if record.judgment_date else None,
+        "finality_status": record.finality_status,
+        "source_url": record.source_url,
+        "retrieved_at": _iso(record.retrieved_at),
+        "binding": False,
+        "is_test_data": record.is_test_data,
+    }
+    if detail:
+        data["text"] = record.text
+        data["principles"] = record.principles or []
+    return data
 
 
 def trace(t: QueryTrace, *, detail: bool = False) -> dict:

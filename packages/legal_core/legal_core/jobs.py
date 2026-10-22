@@ -17,8 +17,15 @@ from legal_core.config import Settings
 from legal_core.embeddings import Embedder
 from legal_core.indexing import reindex_version
 from legal_core.ingestion import DocumentMetadata, IngestionError, ingest_document
-from legal_core.models import DocumentVersion, IngestionJob, SyncRun, utcnow
-from legal_core.monitor import Fetcher, MonitorError, fetch_with_retries, make_http_fetcher, sync_sources
+from legal_core.models import DocumentVersion, IngestionJob, SourceRegistry, SyncRun, utcnow
+from legal_core.monitor import (
+    Fetcher,
+    MonitorError,
+    fetch_with_retries,
+    make_fixture_fetcher,
+    make_http_fetcher,
+    sync_sources,
+)
 from legal_core.parser import ExtractionError
 from legal_core.snapshots import snapshot_content, store_snapshot
 
@@ -137,6 +144,30 @@ def _execute(
         )
         status = "failed" if counts["sources_failed"] and counts["sources_failed"] == counts["sources_checked"] else "succeeded"
         return status, {}, counts, retries + errors, len(retries)
+
+    if job.job_type == "source_probe":
+        from legal_core.connectors import FetcherHttp, make_official_http, probe_source
+
+        stmt = select(SourceRegistry).order_by(SourceRegistry.category, SourceRegistry.name)
+        if payload.get("source_id"):
+            stmt = stmt.where(SourceRegistry.id == uuid.UUID(payload["source_id"]))
+        else:
+            stmt = stmt.where(SourceRegistry.is_test_data.is_(False))
+        official = None
+        results = []
+        for source in session.scalars(stmt):
+            if fetcher is not None:
+                http = FetcherHttp(fetcher)
+            elif source.crawl_policy == "fixture":
+                http = FetcherHttp(make_fixture_fetcher(settings))
+            else:
+                official = official or make_official_http(settings)
+                http = official
+            results.append({"source_id": str(source.id), **probe_source(source, http, settings)})
+        counts: dict[str, int] = {}
+        for row in results:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return "succeeded", {"results": results}, counts, [], 0
 
     if job.job_type == "reindex":
         version = session.get(DocumentVersion, uuid.UUID(payload["version_id"]))

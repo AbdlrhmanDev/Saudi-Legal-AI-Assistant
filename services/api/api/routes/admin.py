@@ -2,13 +2,13 @@
 
 import json
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from api import serializers
 from api.deps import Admin, ApiError, Db, EmbedderDep, PageDep, SettingsDep, ok, require_admin
@@ -18,6 +18,7 @@ from api.schemas import (
     DocumentMetadataPatch,
     Domain,
     IndexRollbackRequest,
+    ProbeRequest,
     RejectRequest,
     RollbackRequest,
     SourcePatch,
@@ -36,14 +37,19 @@ from legal_core.models import (
     QUARANTINE_RESOLUTIONS,
     REVIEW_STATUSES,
     SYNC_STATUSES,
+    AmendmentRelation,
+    Article,
+    DocumentRelationship,
     DocumentVersion,
     IndexGeneration,
     IngestionJob,
+    JudicialDecision,
     LegalInstrument,
     QuarantineEvent,
     QueryTrace,
     ReviewEvent,
     SourceRegistry,
+    SourceSyncLog,
     SyncRun,
     UpdateCandidate,
     WorkerHeartbeat,
@@ -449,6 +455,11 @@ def patch_source(source_id: uuid.UUID, body: SourcePatch, db: Db, settings: Sett
     if source is None:
         raise ApiError(404, "NOT_FOUND", "Source not found.")
     if body.enabled is not None:
+        if body.enabled and source.consolidated_into:
+            raise ApiError(
+                409, "SOURCE_CONSOLIDATED",
+                f"This entry is read by the {source.consolidated_into} connector; enable that source instead.",
+            )  # fmt: skip
         if body.enabled and source.crawl_policy == "manual":
             raise ApiError(409, "SOURCE_MANUAL_ONLY", "This source has no feed to monitor; its documents are uploaded by hand.")
         if body.enabled and source.crawl_policy != "fixture":
@@ -458,6 +469,187 @@ def patch_source(source_id: uuid.UUID, body: SourcePatch, db: Db, settings: Sett
     if body.check_interval is not None:
         source.check_interval = body.check_interval
     return ok(serializers.source(source))
+
+
+@router.post("/sources/probe", status_code=201, summary="Check reachability of every registered source (or one)")
+def probe_sources(db: Db, admin: Admin, body: ProbeRequest | None = None) -> dict:
+    source_id = body.source_id if body else None
+    if source_id and db.get(SourceRegistry, source_id) is None:
+        raise ApiError(404, "NOT_FOUND", "Source not found.")
+    job = enqueue(db, "source_probe", {"source_id": str(source_id) if source_id else None}, admin.id)
+    return ok({"job_id": str(job.id), "status": job.status}, "Source health check queued.")
+
+
+@router.get("/source-sync-logs", summary="Per-source connector executions: counts, HTTP status, failures")
+def list_source_logs(
+    db: Db,
+    page: PageDep,
+    source_id: uuid.UUID | None = None,
+    sync_run_id: uuid.UUID | None = None,
+    status: Annotated[str | None, Query(max_length=20)] = None,
+) -> dict:
+    stmt = select(SourceSyncLog).order_by(SourceSyncLog.started_at.desc())
+    if source_id:
+        stmt = stmt.where(SourceSyncLog.source_id == source_id)
+    if sync_run_id:
+        stmt = stmt.where(SourceSyncLog.sync_run_id == sync_run_id)
+    if status:
+        stmt = stmt.where(SourceSyncLog.status == status)
+    names = dict(db.execute(select(SourceRegistry.id, SourceRegistry.name)).all())
+    return ok(page.run(db, stmt, lambda row: serializers.source_log(row, names.get(row.source_id))))
+
+
+@router.get("/judicial", summary="Stored judicial decisions and principles (kept apart from legislation)")
+def list_judicial(db: Db, page: PageDep, source_id: uuid.UUID | None = None) -> dict:
+    stmt = select(JudicialDecision).order_by(JudicialDecision.retrieved_at.desc(), JudicialDecision.id)
+    if source_id:
+        stmt = stmt.where(JudicialDecision.source_id == source_id)
+    return ok(page.run(db, stmt, serializers.judicial))
+
+
+@router.get("/judicial/{record_id}", summary="One judicial record with its published text")
+def get_judicial(record_id: uuid.UUID, db: Db) -> dict:
+    record = db.get(JudicialDecision, record_id)
+    if record is None:
+        raise ApiError(404, "NOT_FOUND", "Judicial record not found.")
+    return ok(serializers.judicial(record, detail=True))
+
+
+@router.get("/dashboard", summary="Operational dashboard: sources, corpus, updates, verification queue, quality")
+def dashboard(db: Db, settings: SettingsDep) -> dict:
+    now = utcnow()
+    week = now - timedelta(days=7)
+    month = now - timedelta(days=30)
+    sources = db.scalars(
+        select(SourceRegistry).where(SourceRegistry.is_test_data.is_(False)).order_by(SourceRegistry.name)
+    ).all()
+
+    def count(column: str, values: tuple[str, ...]) -> int:
+        return sum(1 for s in sources if getattr(s, column) in values)
+
+    def scalar(stmt) -> int:
+        return db.scalar(stmt) or 0
+
+    retrievable = and_(DocumentVersion.review_status == "approved", DocumentVersion.index_active.is_(True))
+    changes = dict(
+        db.execute(
+            select(AmendmentRelation.change_type, func.count(func.distinct(AmendmentRelation.target_instrument_id)))
+            .where(AmendmentRelation.created_at >= week)
+            .group_by(AmendmentRelation.change_type)
+        ).all()
+    )
+    traces = dict(
+        db.execute(
+            select(QueryTrace.response_status, func.count())
+            .where(QueryTrace.query_time >= month)
+            .group_by(QueryTrace.response_status)
+        ).all()
+    )
+    cited = scalar(
+        select(func.count()).where(
+            QueryTrace.query_time >= month,
+            QueryTrace.response_status.in_(("grounded", "partial")),
+            func.json_array_length(QueryTrace.cited_article_ids) > 0,
+        )
+    )
+    answered = traces.get("grounded", 0) + traces.get("partial", 0)
+    in_scope = answered + traces.get("insufficient_evidence", 0)
+    total_questions = sum(traces.values())
+    last_verified = db.scalars(
+        select(SyncRun)
+        .where(SyncRun.status.in_(("succeeded", "no_op", "partial")))
+        .order_by(SyncRun.finished_at.desc().nulls_last())
+    ).first()
+    names = {s.id: s.name for s in sources}
+    recent_logs = db.scalars(select(SourceSyncLog).order_by(SourceSyncLog.started_at.desc()).limit(25)).all()
+    return ok(
+        {
+            "sources": {
+                "registered": len(sources),
+                "catalog_entries": len({n for s in sources for n in (s.catalog_numbers or [])}),
+                "enabled": sum(1 for s in sources if s.enabled),
+                "integrated": count("integration_status", ("integrated",)),
+                "discovery_only": count("integration_status", ("discovery_only",)),
+                "not_integrated": count("integration_status", ("not_integrated",)),
+                "consolidated": count("integration_status", ("consolidated",)),
+                "available": count("health_status", ("available",)),
+                "degraded": count("health_status", ("degraded",)),
+                "unavailable": count("health_status", ("unavailable",)),
+                "blocked": count("health_status", ("blocked", "robots_disallowed")),
+                "never_checked": count("health_status", ("unknown",)),
+                "items": [serializers.source(s) for s in sources],
+            },
+            "corpus": {
+                "instruments": scalar(select(func.count()).select_from(LegalInstrument)),
+                "versions": scalar(select(func.count()).select_from(DocumentVersion)),
+                "indexed_versions": scalar(select(func.count()).select_from(DocumentVersion).where(retrievable)),
+                "indexed_articles": scalar(
+                    select(func.count(Article.id))
+                    .join(DocumentVersion, Article.version_id == DocumentVersion.id)
+                    .where(retrievable)
+                ),
+                "judicial_records": scalar(select(func.count()).select_from(JudicialDecision)),
+                "relationships": scalar(select(func.count()).select_from(DocumentRelationship)),
+                "drafts_tracked": scalar(
+                    select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.classification == "draft")
+                ),
+            },
+            "last_successful_sync": serializers.sync_run(last_verified) if last_verified else None,
+            "updates_last_7_days": {
+                "discovered": scalar(
+                    select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.discovered_at >= week)
+                ),
+                "new_instruments": changes.get("new_instrument", 0),
+                "amended_instruments": sum(changes.get(k, 0) for k in ("changed", "added", "removed")),
+                "repealed_instruments": changes.get("repealed", 0),
+                "watched_pages_changed": scalar(
+                    select(func.count())
+                    .select_from(SourceSyncLog)
+                    .where(SourceSyncLog.started_at >= week, SourceSyncLog.status == "changed")
+                ),
+            },
+            "verification_queue": {
+                "open_quarantine": scalar(
+                    select(func.count(func.distinct(QuarantineEvent.candidate_id))).where(
+                        QuarantineEvent.resolution_state == "open"
+                    )
+                ),
+                "needs_review": scalar(
+                    select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.state == "needs_review")
+                ),
+                "deferred_backlog": scalar(
+                    select(func.count())
+                    .select_from(UpdateCandidate)
+                    .where(
+                        UpdateCandidate.state == "candidate",
+                        UpdateCandidate.document_ref.is_not(None),
+                        UpdateCandidate.proposed_version_id.is_(None),
+                        UpdateCandidate.classification.not_in(("irrelevant", "draft", "notice")),
+                    )
+                ),
+                "failed_fetches": scalar(
+                    select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.state == "failed")
+                ),
+            },
+            "jobs": {
+                "failed": scalar(select(func.count()).select_from(IngestionJob).where(IngestionJob.status == "failed")),
+                "queued": scalar(
+                    select(func.count())
+                    .select_from(IngestionJob)
+                    .where(IngestionJob.status.in_(("queued", "running")))
+                ),
+            },
+            "quality_last_30_days": {
+                "questions": total_questions,
+                "by_status": traces,
+                "answer_rate": round(answered / in_scope, 3) if in_scope else None,
+                "cited_answer_rate": round(cited / answered, 3) if answered else None,
+                "out_of_scope_rate": round(traces.get("out_of_scope", 0) / total_questions, 3) if total_questions else None,
+            },
+            "recent_source_logs": [serializers.source_log(row, names.get(row.source_id)) for row in recent_logs],
+            "timezone": settings.sync_timezone,
+        }
+    )
 
 
 @router.get("/audit", summary="Audit trail of review decisions and index activations")

@@ -8,9 +8,9 @@ a reason code and the last trusted corpus keeps serving answers.
 
 | Stage | Code | Result |
 |---|---|---|
-| 1 Discover | `monitor.sync_sources` (official RSS/listings) + `sync._supplementary_discovery` (bounded agent search, allowlist only) | Candidate per new/changed feed item |
+| 1 Discover | `monitor.sync_sources` → `connectors.discover` per source (RSS, document listings, MOJ judgments API, page change detection) + `sync._supplementary_discovery` (bounded agent search, allowlist only) | Candidate per new/changed document; judgments into `judicial_decisions`; a `source_sync_logs` row and health status per source |
 | 2 Fetch | `monitor.acquire` → `snapshots.store_snapshot` | Immutable bytes + SHA-256 in `source_snapshots`; SSRF/redirect/MIME/size/robots checks |
-| 3 Deduplicate | feed identity + content hash; `(source, checksum)` snapshots; `(instrument, raw_hash)` versions | Unchanged items and documents are skipped |
+| 3 Deduplicate | feed identity + content hash; one candidate per canonical URL across sources (a Bureau of Experts page linked from a ministry is attributed to the Bureau); `(source, checksum)` snapshots; `(instrument, raw_hash)` versions | Unchanged items and documents are skipped; documents beyond the per-source politeness cap wait as backlog; known laws are re-read every `CONNECTOR_REFRESH_DAYS` to detect amendments |
 | 4 Parse | `ingestion.ingest_document` | Article-level text, normalized search text, parse warnings |
 | 5 Classify | `agent.RuleClassifier` or `agent.OpenAIClassifier` (structured output, verified against the source) | Proposal: type, target instrument, quoted date spans |
 | 6 Validate | `release.evaluate` (deterministic gate) + `legal_dates.resolve_effective_date` | publish / quarantine (reason code) / exclude |
@@ -26,6 +26,7 @@ A candidate is published only if all of these hold, in this order; the first fai
 | Check | Reason code when it fails |
 |---|---|
 | Agent and rules agree (model may only reclassify inconclusive decree/decision/circular items) | `AGENT_RULES_DISAGREE` |
+| Source publishes legislation (Istitlaa drafts, news, directories and archives are excluded whatever the item title says) | `NOT_A_LEGAL_CHANGE` (excluded) |
 | Type is new law / amendment / repeal / regulation (drafts, notices, news are excluded) | `NOT_A_LEGAL_CHANGE` (excluded) |
 | Enabled, allowlisted official source over HTTPS | `NOT_OFFICIAL_SOURCE` |
 | Official text retrieved and snapshotted | `NO_OFFICIAL_TEXT`, `SOURCE_UNAVAILABLE` (retried) |
@@ -34,7 +35,7 @@ A candidate is published only if all of these hold, in this order; the first fai
 | Amended / repealed instrument resolved and authoritative | `TARGET_UNRESOLVED` |
 | Consolidated text, not a partial amendment | `AMBIGUOUS_AMENDMENT_MAPPING` |
 | Text actually differs from the version in force | `NO_TEXTUAL_CHANGE` (excluded) |
-| Exactly one evidenced effective date | `EFFECTIVE_DATE_MISSING`, `CONFLICTING_EFFECTIVE_DATES`, `HIJRI_DATE_UNVERIFIED`, `PUBLICATION_DATE_MISSING` |
+| Exactly one evidenced effective date — or, for a Bureau of Experts consolidated law whose text states none, the Bureau's official status «ساري», which verifies it in force from the day its page was retrieved (never back-dated) | `EFFECTIVE_DATE_MISSING`, `CONFLICTING_EFFECTIVE_DATES`, `HIJRI_DATE_UNVERIFIED`, `PUBLICATION_DATE_MISSING`, `STATUS_NOT_IN_FORCE` |
 | No other authoritative version starts that day / repeal follows the versions it ends | `CONFLICTING_EFFECTIVE_VERSION` |
 | Staged index passes health checks | `INDEX_HEALTH_FAILED` (retried) |
 

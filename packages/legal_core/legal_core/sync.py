@@ -45,6 +45,7 @@ from legal_core.models import (
     utcnow,
 )
 from legal_core.monitor import Fetcher, _fetcher_for, acquire, sync_sources
+from legal_core.relationships import link_instruments
 from legal_core.release import TRANSIENT_REASONS, GateDecision, evaluate, unprocessed_candidates
 from legal_core.review import authoritative_versions, place_version
 
@@ -240,7 +241,9 @@ def execute_run(
 def _pipeline(ctx: _Context) -> str:
     settings = ctx.settings
     with ctx.session_factory() as session:
-        totals, errors = sync_sources(session, settings, force=True, fetcher=ctx.fetcher, on_retry=ctx.errors.append)
+        totals, errors = sync_sources(
+            session, settings, force=True, fetcher=ctx.fetcher, on_retry=ctx.errors.append, run_id=ctx.run_id
+        )
         ctx.errors.extend(errors)
         session.execute(
             update(UpdateCandidate)
@@ -248,10 +251,17 @@ def _pipeline(ctx: _Context) -> str:
             .values(sync_run_id=ctx.run_id)
         )
         session.commit()
-    ctx.stages["discover"] = {k: totals.get(k, 0) for k in ("sources_checked", "sources_failed", "seen", "new", "changed")}
+    ctx.stages["discover"] = {
+        k: totals.get(k, 0)
+        for k in (
+            "sources_checked", "sources_failed", "seen", "new", "changed", "duplicates_across_sources", "deferred",
+            "page_changed", "refreshed", "judicial_new", "judicial_failed",
+        )
+    }  # fmt: skip
     ctx.stages["fetch"] = {"acquired": totals.get("acquired", 0), "acquire_failed": totals.get("acquire_failed", 0)}
     ctx.stages["deduplicate"] = {"unchanged_items": totals.get("unchanged", 0), "skipped_items": totals.get("skipped", 0)}
 
+    ctx.stages["discover"]["idle_sources_probed"] = _probe_idle_sources(ctx)
     retried = _retry_transient(ctx)
     ctx.stages["fetch"]["retried"] = retried
     ctx.stages["fetch"]["supplementary"] = _supplementary_discovery(ctx)
@@ -351,6 +361,31 @@ def _quarantine(
         )  # fmt: skip
     )
     ctx.quarantined.append(code)
+
+
+def _probe_idle_sources(ctx: _Context) -> int:
+    """Every registered source is checked nightly: sources that were not read by a connector (disabled,
+    or with no permitted access path) get a reachability probe so their reported health stays current.
+    Automated tests never reach the network."""
+    if ctx.settings.environment == "test":
+        return 0
+    from legal_core.connectors import FetcherHttp, make_official_http, probe_source
+
+    probed = 0
+    with ctx.session_factory() as session:
+        idle = session.scalars(
+            select(SourceRegistry).where(
+                SourceRegistry.enabled.is_(False),
+                SourceRegistry.consolidated_into.is_(None),
+                SourceRegistry.is_test_data.is_(False),
+            )
+        ).all()
+        http = FetcherHttp(ctx.fetcher) if ctx.fetcher else make_official_http(ctx.settings)
+        for source in idle:
+            probe_source(source, http, ctx.settings)
+            probed += 1
+        session.commit()
+    return probed
 
 
 def _retry_transient(ctx: _Context) -> int:
@@ -516,6 +551,7 @@ def _publish(ctx: _Context, to_publish: list[tuple[uuid.UUID, GateDecision]]) ->
             except IndexHealthError as exc:
                 health_failure = exc.health
         if health_failure is None:
+            link_instruments(session)
             session.commit()
         else:
             session.rollback()

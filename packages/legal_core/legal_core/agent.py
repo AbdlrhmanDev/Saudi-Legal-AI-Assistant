@@ -22,6 +22,7 @@ from legal_core.config import Settings
 from legal_core.diffing import diff_articles
 from legal_core.models import (
     CLASSIFICATIONS,
+    NON_LEGISLATIVE_KINDS,
     DocumentVersion,
     LegalInstrument,
     SourceSnapshot,
@@ -80,11 +81,12 @@ class RuleClassifier:
     name = "rules"
 
     def propose(self, session: Session, candidate: UpdateCandidate, document: str) -> AgentProposal:
-        classification = (
-            candidate.classification
-            if candidate.classification_source == "reviewer"
-            else classify(candidate.title, candidate.summary)
-        )
+        if candidate.classification_source == "reviewer":
+            classification = candidate.classification
+        elif candidate.source is not None and candidate.source.document_kind in NON_LEGISLATIVE_KINDS:
+            classification = candidate.classification  # drafts stay drafts, news stays a notice
+        else:
+            classification = classify(candidate.title, candidate.summary)
         target = candidate.target_instrument_id or guess_target_instrument(session, candidate.title, candidate.summary)
         affected = (candidate.diff or {}).get("affected_article_numbers", [])
         return AgentProposal(classification, target, self.name, affected_article_numbers=list(affected))

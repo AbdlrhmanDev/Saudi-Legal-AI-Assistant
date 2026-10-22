@@ -40,16 +40,31 @@ Base URL `http://localhost:8000`. Interactive docs: `/docs`. Machine-readable sp
   "success": true,
   "data": {
     "answer_ar": "…",
-    "answer_status": "grounded | partial | insufficient_evidence",
+    "answer_status": "grounded | partial | insufficient_evidence | out_of_scope",
     "as_of_date": "2026-10-12",
     "citations": [
       {
         "law_id": "uuid", "article_id": "uuid", "version_id": "uuid", "source_url": "https://…",
         "law_title_ar": "…", "article_number": "5", "article_label": "المادة الخامسة", "chapter": "…",
         "quote": "full article text", "effective_from": "2024-01-01", "effective_to": null,
-        "legal_status": "active", "is_test_data": true
+        "legal_status": "active", "issuing_authority": "…", "is_test_data": true
       }
     ],
+    "answer_sections": {
+      "headings": {"answer": "الجواب", "actions": "وش تقدر تسوي؟", "sources": "المصدر الرسمي"},
+      "answer": "…",
+      "actions": [{"kind": "legal_step | fact_to_confirm", "text": "…", "article_ids": ["uuid"]}],
+      "sources": [{"law_title_ar": "…", "article_label": "…", "article_number": "5", "issuing_authority": "…",
+                   "legal_status_ar": "سارٍ منذ 2024-01-01", "effective_from": "2024-01-01", "official_url": "https://…"}]
+    },
+    "related_judicial": [
+      {"id": "uuid", "title": "…", "court_name": "…", "court_level": "first_instance", "hijri_date": "1445-09-04",
+       "finality_status": "unknown", "source_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/0/…",
+       "excerpt": "…", "binding": false, "note_ar": "…"}
+    ],
+    "related_drafts": [{"title": "…", "official_url": "…", "legal_status": "draft", "note_ar": "…"}],
+    "query_analysis": {"in_scope": true, "register": "saudi_dialect", "intents": [{"id": "labor.termination", "label_ar": "…", "score": 2.0}],
+                       "domain": "labor", "entities": {"durations": [{"amount": "2", "unit": "شهر"}]}, "facts_to_confirm": ["…"]},
     "caveats": ["…"],
     "trace_id": "uuid",
     "disclaimer_ar": "…",
@@ -82,7 +97,13 @@ Each citation also carries `instrument_id` and `official_url` (PRD v2 14.1 names
 UI mapping (PRD 9.4 / 12.3): `answer_ar` → direct response; `citations` → legal basis with article label,
 “open source” action (`source_url`) and supporting passage (`quote`); `as_of_date` + citation
 `effective_from/effective_to` + `forthcoming` → state/date banner; `caveats` and `disclaimer_ar` → notices.
-For `insufficient_evidence`, `citations` is always empty — show the limitation message, no legal basis section.
+For `insufficient_evidence`, `citations` is always empty and `answer_ar` is exactly
+«لم أجد معلومات موثوقة وكافية في المصادر الرسمية المتاحة للإجابة عن سؤالك.» — show it, with no legal basis section.
+For `out_of_scope` (not a Saudi legal question), `answer_ar` is exactly «غير متوفر معلومات عن ذا الشي» and every
+other content field is empty (`disclaimer_ar` is `""`): render that sentence alone.
+`answer_sections` exists only for `grounded`/`partial`. `related_judicial` items are published judgments for
+orientation; they are never evidence and must be labelled non-binding. `related_drafts` appear only when the user
+asks about proposed regulations and must be labelled as drafts.
 Show an `is_test_data` badge wherever it is true.
 
 For incremental display use `POST /api/v1/chat/stream` with the same request body. It returns
@@ -191,7 +212,11 @@ warnings, resubmit with `acknowledge_warnings: true`), `CONFLICTING_VERSION` (40
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/admin/stats` | corpus counts, queue by state, jobs by status, recent failed jobs, sources, last successful check, chat latency p50/p95, worker liveness |
-| GET | `/api/v1/admin/sources` · PATCH `/api/v1/admin/sources/{id}` | `{enabled?, check_interval?}` (minutes). Enabling a `manual` source → 409 `SOURCE_MANUAL_ONLY` |
+| GET | `/api/v1/admin/sources` · PATCH `/api/v1/admin/sources/{id}` | `{enabled?, check_interval?}` (minutes). Enabling a `manual` source → 409 `SOURCE_MANUAL_ONLY`; a consolidated entry → 409 `SOURCE_CONSOLIDATED`. Rows carry catalog numbers, category, tier, connector, `integration_status`, `health_status`, `health_detail`, `last_http_status`, `access_notes` |
+| POST | `/api/v1/admin/sources/probe` | `{source_id?}` → queued `source_probe` job; reads each source once and records its health (no candidates) |
+| GET | `/api/v1/admin/source-sync-logs?source_id=&sync_run_id=&status=` | one row per connector run per source: `changed | no_change | failed`, HTTP status, counts, error |
+| GET | `/api/v1/admin/judicial` · GET `/api/v1/admin/judicial/{id}` | stored judgments and principle collections (detail includes text) |
+| GET | `/api/v1/admin/dashboard` | sources (registered, integrated, available, blocked…, every row), corpus (instruments, indexed articles, judicial records, relationships), last verified sync, 7-day updates, verification queue, failed jobs, 30-day answer quality, recent source logs |
 | GET | `/api/v1/admin/traces?response_status=` · GET `/api/v1/admin/traces/{id}` | detail has `retrieved[]` with `rank, rrf_score, lexical_rank, lexical_score, vector_rank, vector_similarity, lexical_coverage, strong, quarantined` |
 | GET | `/api/v1/admin/audit?decision=` | review events: `auto_published | auto_quarantined | auto_excluded | approved | rejected | rolled_back | generation_rolled_back | classification_override`; automatic decisions have `actor_id = null` and a `sync_run_id` |
 | GET | `/api/v1/admin/evaluation` | latest measured evaluation report (404 until generated) |

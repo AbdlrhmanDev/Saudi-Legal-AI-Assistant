@@ -1,24 +1,24 @@
 # Evaluation report (measured)
 
-- Generated: 2026-10-19T22:18:51+00:00
+- Generated: 2026-10-22T00:52:10+00:00
 - Corpus: FICTIONAL fixture corpus (test data) - not the official pilot corpus
-- Embeddings: `hash-ngram-1536` · Answer model: `extractive-quote-v1` · Mode: offline
+- Embeddings: `hash-ngram-1536` · Answer model: `extractive-focused-v2` · Mode: offline
 - Cases: 34
 
 | Metric | Measured | PRD target | Met |
 |---|---|---|---|
 | Retrieval Recall@5 | 100.0% | ≥90% | yes |
 | Citation accuracy | 100.0% | ≥95% | yes |
-| Auto-checked correctness (proxy) | 96.2% | ≥90% | yes |
+| Auto-checked correctness (proxy) | 100.0% | ≥90% | yes |
 | Abstention on out-of-corpus | 100.0% | ≥100% | yes |
 | Effective-date scenarios | 100.0% | ≥100% | yes |
 
-Latency (ms): p50 17.5, p95 29, max 38.
+Latency (ms): p50 25.5, p95 38, max 46.
 
 | Class | Passed | Total |
 |---|---|---|
 | direct | 10 | 10 |
-| paraphrase | 5 | 6 |
+| paraphrase | 6 | 6 |
 | multi_article | 3 | 3 |
 | out_of_corpus | 5 | 5 |
 | temporal | 5 | 5 |
@@ -27,7 +27,7 @@ Latency (ms): p50 17.5, p95 29, max 38.
 
 ## Failures
 
-- **P02** (paraphrase) `متى تودع رواتب العمال؟` → insufficient_evidence: abstained on an answerable question; missing expected text: اليوم السابع
+None.
 
 ## Notes
 

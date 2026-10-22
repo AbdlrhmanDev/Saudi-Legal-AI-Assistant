@@ -411,11 +411,18 @@ def test_feed_sync_and_reviewer_overrides_over_http(client, admin, settings, emb
     assert stats["updates_by_state"]["rejected"] == 1 and stats["jobs_by_status"] == {"succeeded": 1}
     assert stats["last_successful_source_check"] and stats["worker"]["alive"] is False
     sources = client.get("/api/v1/admin/sources", headers=admin).json()["data"]["items"]
-    assert len(sources) == 6 and [s["name"] for s in sources if s["enabled"]] == ["TEST FIXTURE - simulated official feed"]
+    # Every entry of the approved official list (39) is registered, plus the isolated test feed.
+    official = [s for s in sources if not s["is_test_data"]]
+    assert sorted(n for s in official for n in s["catalog_numbers"]) == list(range(1, 40))
+    assert [s["name"] for s in sources if s["enabled"]] == ["TEST FIXTURE - simulated official feed"]
 
-    # Switching sources on and off: a feed source can be enabled, a manual-upload source cannot.
-    by_policy = {s["crawl_policy"]: s for s in sources}
-    feed, manual = by_policy["fetch_allowed"], by_policy["manual"]
+    # Switching sources on and off: a feed source can be enabled; a source without a permitted access
+    # path cannot, and neither can an entry consolidated into another connector.
+    by_key = {s["source_key"]: s for s in official}
+    feed, manual, consolidated = by_key["uqn_rss"], by_key["sama"], by_key["bog_judicial"]
+    assert manual["crawl_policy"] == "manual" and consolidated["integration_status"] == "consolidated"
+    merged = client.patch(f"/api/v1/admin/sources/{consolidated['id']}", headers=admin, json={"enabled": True})
+    assert merged.status_code == 409 and merged.json()["error"]["code"] == "SOURCE_CONSOLIDATED"
     on = client.patch(f"/api/v1/admin/sources/{feed['id']}", headers=admin, json={"enabled": True})
     assert on.status_code == 200 and on.json()["data"]["enabled"] is True
     off = client.patch(f"/api/v1/admin/sources/{feed['id']}", headers=admin, json={"enabled": False})

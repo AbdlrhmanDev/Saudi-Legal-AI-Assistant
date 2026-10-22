@@ -8,14 +8,21 @@
    - `feed_only` — the feed is polled for detection; documents are uploaded by an admin.
    - `fetch_allowed` — the linked page may be fetched and snapshotted.
    - `fixture` — local test data only (`ALLOW_FIXTURE_SOURCES`).
-3. Official sources are seeded **disabled**. Enabling one is an explicit admin action that should follow a
-   review of that site's terms of use, robots policy and reuse conditions. That review has **not** been done
-   as part of this code; the registry is a starting point, not a statement of permission.
+3. The registry mirrors the approved source list (`legal_core/source_catalog.py`). Sources with an integrated
+   connector are seeded **enabled** outside tests, because the approved list asked for them to be synchronized;
+   `none` and consolidated entries are never enabled. robots.txt is honoured on every request, and a source that
+   refuses automated access (403, robots.txt, firewall) is reported as blocked and never worked around. Reuse
+   terms have **not** been reviewed by counsel (`licensing_status = public_terms_unreviewed`); an operator can
+   disable any source from the official sources screen, and later seeding does not re-enable it.
 4. Polling is infrequent (`check_interval`, default 6 h), identifies itself (`HTTP_USER_AGENT`), has timeouts
    and bounded retries.
 5. A feed item is a detection signal. It never changes answers without a reviewer's approval.
 
-## Registered starting points (from the PRD reference list)
+## Registered sources
+
+All 39 entries, their connectors and their measured status: [official_sources.md](official_sources.md).
+
+### Original starting points (before the catalog)
 
 | Source | URL | Seeded policy |
 |---|---|---|

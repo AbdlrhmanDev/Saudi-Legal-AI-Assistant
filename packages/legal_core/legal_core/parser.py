@@ -9,6 +9,7 @@ do not split an article.
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from urllib.parse import urlsplit
 
 from legal_core.normalize import normalize_ar
@@ -408,6 +409,50 @@ def parse_boe_html(content: bytes) -> ParsedDocument | None:
     if has_injection:
         doc.warnings.append("possible_prompt_injection")
     return doc
+
+
+@dataclass
+class BoeMetadata:
+    status: str | None  # e.g. "ساري", as published by the Bureau of Experts
+    issued_at: date | None
+    published_at: date | None
+
+
+_BOE_GREGORIAN = re.compile(r"الموافق\s*:\s*(\d{1,2})/(\d{1,2})/(\d{4})")
+
+
+def parse_boe_metadata(content: bytes) -> BoeMetadata | None:
+    """The official summary block of a Bureau of Experts law page: status (الحالة), issue and
+    publication dates with their Gregorian equivalents as printed by the Bureau. None if absent."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(content, "html.parser")
+    if soup.select_one("#divLawText") is None:
+        return None
+    lines = [line.strip() for line in soup.get_text("\n").splitlines() if line.strip()]
+
+    def after(label: str) -> str | None:
+        for index, line in enumerate(lines[:-1]):
+            if line == label:
+                return lines[index + 1]
+        return None
+
+    def gregorian(value: str | None) -> date | None:
+        match = _BOE_GREGORIAN.search(value or "")
+        if not match:
+            return None
+        day, month, year = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    status = after("الحالة")
+    return BoeMetadata(
+        status=status.strip() if status else None,
+        issued_at=gregorian(after("تاريخ الإصدار")),
+        published_at=gregorian(after("تاريخ النشر")),
+    )
 
 
 def parse_uqn_html(content: bytes) -> ParsedDocument | None:

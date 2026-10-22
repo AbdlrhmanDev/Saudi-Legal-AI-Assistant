@@ -15,16 +15,31 @@ import uuid
 from collections import OrderedDict
 from datetime import UTC, date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from legal_core.config import Settings
 from legal_core.embeddings import Embedder
 from legal_core.freshness import cached_freshness
 from legal_core.generations import active_generation_id
-from legal_core.llm import ANSWER_STATUSES, AnswerModel, Draft, Evidence, quote_evidence
-from legal_core.models import DocumentVersion, LegalInstrument, QueryTrace
-from legal_core.normalize import normalize_ar
+from legal_core.intent import (
+    OUT_OF_SCOPE_AR,
+    QueryAnalysis,
+    analyze_query,
+    get_scope_classifier,
+    is_borderline,
+)
+from legal_core.llm import (
+    ANSWER_STATUSES,
+    AnswerModel,
+    Draft,
+    Evidence,
+    accepts_context,
+    focused_excerpt,
+    quote_evidence,
+)
+from legal_core.models import DocumentVersion, JudicialDecision, LegalInstrument, QueryTrace, UpdateCandidate
+from legal_core.normalize import lexical_tokens, normalize_ar
 from legal_core.official_services import suggest_official_services
 from legal_core.retrieval import RetrievedArticle, mentioned_article_numbers, retrieve
 from legal_core.temporal import forthcoming_after
@@ -71,7 +86,9 @@ DISCLAIMER_AR = (
     "هذه معلومات عامة مستندة إلى النصوص المفهرسة فقط وليست استشارة قانونية. "
     "للحالات الخاصة يُنصح بالرجوع إلى محامٍ مرخص."
 )
-INSUFFICIENT_AR = "لم أجد في المصادر القانونية المفهرسة نصًا ساريًا يجيب عن هذا السؤال."
+INSUFFICIENT_AR = "لم أجد معلومات موثوقة وكافية في المصادر الرسمية المتاحة للإجابة عن سؤالك."
+JUDICIAL_NOTE_AR = "حكم أو مبدأ قضائي منشور للاسترشاد فقط؛ لا يُعد قاعدة عامة ملزمة ولم يُستخدم دليلاً في الإجابة."
+DRAFT_NOTE_AR = "مشروع مطروح لاستطلاع الرأي وليس نظامًا نافذًا."
 ERROR_AR = "تعذّر إكمال الطلب حالياً. لم تُقدَّم أي إجابة نظامية؛ يُرجى المحاولة لاحقاً."
 
 _PENALTY_TERMS = ("عقوبه", "عقوبات", "غرامه", "جزاء")
@@ -144,6 +161,15 @@ def _validate(draft: Draft, evidence: list[Evidence], query: str | None = None) 
     stray = mentioned_article_numbers(draft.answer_ar) - allowed
     if stray:
         return f"answer mentions article numbers {sorted(stray)} that are not supported by the cited evidence"
+    for step in draft.steps:
+        cited = [c for c in step.get("citations", [])]
+        if not cited or any(c not in by_id for c in cited):
+            return "every practical step must cite evidence ids from the evidence set"
+        step_allowed = {by_id[c].article_number for c in cited if by_id[c].article_number}
+        for c in cited:
+            step_allowed |= mentioned_article_numbers(by_id[c].text)
+        if mentioned_article_numbers(step.get("text", "")) - step_allowed:
+            return "a practical step mentions an article number its citations do not support"
     # The official traffic fine table separates roads posted at 120 or less from roads
     # posted at 140. A vague speeding question must not silently select one branch.
     # This only applies when both branch labels are present in the retrieved evidence.
@@ -221,14 +247,18 @@ def _traffic_speed_table_draft(query: str, evidence: list[Evidence]) -> Draft | 
 
 
 def _draft_with_validation(
-    llm: AnswerModel, query: str, as_of: date, evidence: list[Evidence]
+    llm: AnswerModel, query: str, as_of: date, evidence: list[Evidence], context: dict | None = None
 ) -> tuple[Draft, list[str], str | None]:
     """One attempt, one retry with validator feedback, then a conservative verbatim quotation."""
     notes: list[str] = []
     feedback = None
+    with_context = context is not None and accepts_context(llm)
     for attempt in range(2):
         try:
-            draft = llm.draft(query, as_of, evidence, feedback)
+            if with_context:
+                draft = llm.draft(query, as_of, evidence, feedback, context=context)
+            else:
+                draft = llm.draft(query, as_of, evidence, feedback)
         except Exception as exc:
             log.warning("llm_failed", extra={"error": type(exc).__name__, "attempt": attempt})
             notes.append(f"llm_error:{type(exc).__name__}")
@@ -264,6 +294,8 @@ def _citation(item: RetrievedArticle, as_of: date) -> dict:
         "effective_from": item.effective_from.isoformat(),
         "effective_to": item.effective_to.isoformat() if item.effective_to else None,
         "legal_status": "active",  # retrieval only returns versions in force on as_of_date
+        "issuing_authority": item.issuing_authority,
+        "status_basis": item.status_basis,
         "is_test_data": item.is_test_data,
     }
 
@@ -327,6 +359,205 @@ def _freshness_fields(session: Session, settings: Settings) -> dict:
     }
 
 
+_titles_lock = threading.Lock()
+_titles_cache: dict = {"key": None, "titles": []}
+_TITLE_PARENS = re.compile(r"[\(\[].*?[\)\]]")
+
+
+def _known_titles(session: Session) -> list[str]:
+    """Normalized titles of indexed instruments (multi-word only), cached per active generation."""
+    key = active_generation_id(session)
+    with _titles_lock:
+        if key is not None and _titles_cache["key"] == key:
+            return _titles_cache["titles"]
+    rows = session.scalars(
+        select(LegalInstrument.official_title_ar)
+        .join(DocumentVersion, DocumentVersion.instrument_id == LegalInstrument.id)
+        .where(DocumentVersion.review_status == "approved", DocumentVersion.index_active.is_(True))
+        .distinct()
+    ).all()
+    titles = sorted({" ".join(normalize_ar(_TITLE_PARENS.sub(" ", t)).split()) for t in rows})
+    titles = [t for t in titles if len(t.split()) >= 2]
+    with _titles_lock:
+        _titles_cache.update(key=key, titles=titles)
+    return titles
+
+
+def analyze_for_answer(session: Session, query: str, settings: Settings) -> QueryAnalysis:
+    """Deterministic analysis; a configured model is consulted only for borderline scope decisions."""
+    titles = _known_titles(session)
+    analysis = analyze_query(query, known_titles=titles)
+    if is_borderline(analysis) and settings.environment != "test":
+        classifier = get_scope_classifier(settings)
+        verdict = classifier.in_scope(query) if classifier else None
+        if verdict is not None and verdict != analysis.in_scope:
+            analysis = analyze_query(query, known_titles=titles, scope_override=verdict)
+    return analysis
+
+
+def _related_judicial(session: Session, tokens: list[str], limit: int = 3) -> list[dict]:
+    """Published judgments sharing the question's legal vocabulary. Shown beside an answer, never as
+    its evidence, and always labelled as non-binding."""
+    tokens = list(dict.fromkeys(t for t in tokens if len(t) >= 3))
+    if len(tokens) < 2:
+        return []
+    tsq = func.to_tsquery("simple", " | ".join(tokens))
+    rank = func.ts_rank(JudicialDecision.lexical_index, tsq)
+    rows = session.execute(
+        select(JudicialDecision, rank).where(JudicialDecision.lexical_index.op("@@")(tsq)).order_by(rank.desc()).limit(20)
+    ).all()
+    needed = max(2, -(-len(tokens) // 2))
+    results = []
+    for record, _rank in rows:
+        words = set(record.lexical_text.split())
+        if sum(token in words for token in tokens) < needed:
+            continue
+        results.append(
+            {
+                "id": str(record.id),
+                "title": record.title,
+                "material_type": record.material_type,
+                "court_name": record.court_name,
+                "court_level": record.court_level,
+                "city": record.city,
+                "hijri_date": record.hijri_date,
+                "judgment_date": record.judgment_date.isoformat() if record.judgment_date else None,
+                "finality_status": record.finality_status,
+                "source_url": record.source_url,
+                "excerpt": focused_excerpt(" ".join(tokens), record.text, 280),
+                "binding": False,
+                "note_ar": JUDICIAL_NOTE_AR,
+                "is_test_data": record.is_test_data,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _related_drafts(session: Session, tokens: list[str], limit: int = 3) -> list[dict]:
+    """Official consultation drafts on the same subject, for questions about proposed regulations."""
+    wanted = {t for t in tokens if len(t) >= 3}
+    if not wanted:
+        return []
+    rows = session.scalars(
+        select(UpdateCandidate)
+        .where(UpdateCandidate.classification == "draft")
+        .order_by(UpdateCandidate.discovered_at.desc())
+        .limit(500)
+    ).all()
+    results = []
+    for candidate in rows:
+        overlap = wanted & set(lexical_tokens(candidate.title))
+        if len(overlap) < min(2, len(wanted)):
+            continue
+        results.append(
+            {
+                "title": candidate.title,
+                "official_url": candidate.canonical_url,
+                "published_at": candidate.published_at.date().isoformat() if candidate.published_at else None,
+                "legal_status": "draft",
+                "note_ar": DRAFT_NOTE_AR,
+                "is_test_data": candidate.is_test_data,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _status_ar(citation: dict) -> str:
+    if citation.get("status_basis") == "publisher_status" and not citation.get("effective_to"):
+        return f"ساري وفق هيئة الخبراء بمجلس الوزراء (تحقق في {citation['effective_from']})"
+    if citation.get("effective_to"):
+        return f"سارٍ من {citation['effective_from']} حتى {citation['effective_to']}"
+    return f"سارٍ منذ {citation['effective_from']}"
+
+
+def _sections(answer_ar: str, status: str, citations: list[dict], draft: Draft | None,
+              analysis: QueryAnalysis, by_eid: dict) -> dict | None:  # fmt: skip
+    """The user-facing structure: الجواب / وش تقدر تسوي؟ / المصدر الرسمي. Steps come only from cited
+    evidence; facts to confirm are questions to the user, never statements of law."""
+    if status not in ("grounded", "partial"):
+        return None
+    actions = []
+    for step in (draft.steps if draft else []):
+        cited = [by_eid[c] for c in step.get("citations", []) if c in by_eid]
+        if cited:
+            actions.append({"kind": "legal_step", "text": step["text"].strip(),
+                            "article_ids": [str(c.article_id) for c in cited]})  # fmt: skip
+    facts = (draft.facts_needed if draft and draft.facts_needed else analysis.facts_to_confirm)[:3]
+    actions.extend({"kind": "fact_to_confirm", "text": fact} for fact in facts)
+    sources = []
+    seen = set()
+    for citation in citations:
+        key = (citation["version_id"], citation["article_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(
+            {
+                "law_title_ar": citation["law_title_ar"],
+                "article_label": citation["article_label"],
+                "article_number": citation["article_number"],
+                "issuing_authority": citation.get("issuing_authority"),
+                "legal_status_ar": _status_ar(citation),
+                "effective_from": citation["effective_from"],
+                "official_url": citation["official_url"],
+            }
+        )
+    return {
+        "headings": {"answer": "الجواب", "actions": "وش تقدر تسوي؟", "sources": "المصدر الرسمي"},
+        "answer": answer_ar,
+        "actions": actions,
+        "sources": sources,
+    }
+
+
+def _analysis_summary(analysis: QueryAnalysis, interpreted_with: str | None) -> dict:
+    return {
+        "in_scope": analysis.in_scope,
+        "scope_reason": analysis.scope_reason,
+        "register": analysis.register,
+        "language": analysis.language,
+        "intents": [m.as_dict() for m in analysis.intents],
+        "domain": analysis.domain,
+        "entities": analysis.entities,
+        "facts_to_confirm": analysis.facts_to_confirm,
+        "wants_draft": analysis.wants_draft,
+        "wants_historical": analysis.wants_historical,
+        "jailbreak_detected": analysis.jailbreak_detected,
+        "retrieval_expansion_used": interpreted_with is not None,
+    }
+
+
+def _write_trace(session: Session, settings: Settings, *, trace_id, query, language, domain, as_of, retrieved_trace,
+                 cited_ids, status, error, started, timings, llm, embedder) -> None:  # fmt: skip
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    timings["total"] = latency_ms
+    session.add(
+        QueryTrace(
+            id=trace_id,
+            query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            query_text=query if settings.trace_store_query_text else None,
+            query_language=language,
+            domain=domain,
+            as_of_date=as_of,
+            retrieved=retrieved_trace,
+            retrieved_version_ids=sorted({r["version_id"] for r in retrieved_trace}),
+            cited_article_ids=cited_ids,
+            response_status=status,
+            error=error,
+            latency_ms=latency_ms,
+            timings_ms=timings,
+            llm_model=llm.model_name,
+            embedding_model=embedder.model_name,
+            auto_delete_at=datetime.now(UTC) + timedelta(days=settings.trace_retention_days),
+        )
+    )
+    session.commit()
+
+
 def answer_question(
     session: Session,
     *,
@@ -342,6 +573,36 @@ def answer_question(
     today = today_riyadh()
     as_of = as_of_date or today
     timings: dict[str, int] = {}
+    freshness = _freshness_fields(session, settings)
+
+    # 1) Domain guard: anything that is not a Saudi legal/regulatory question gets one fixed sentence,
+    #    with no retrieval, no model call, no citations and no suggestions.
+    t = time.perf_counter()
+    analysis = analyze_for_answer(session, query, settings)
+    timings["analysis"] = int((time.perf_counter() - t) * 1000)
+    if not analysis.in_scope:
+        _write_trace(session, settings, trace_id=trace_id, query=query, language=analysis.language, domain=domain,
+                     as_of=as_of, retrieved_trace=[], cited_ids=[], status="out_of_scope", error=None,
+                     started=started, timings=timings, llm=llm, embedder=embedder)  # fmt: skip
+        return {
+            "answer_ar": OUT_OF_SCOPE_AR,
+            "answer_status": "out_of_scope",
+            "as_of_date": as_of.isoformat(),
+            "citations": [],
+            "caveats": [],
+            "trace_id": str(trace_id),
+            "disclaimer_ar": "",
+            "forthcoming": [],
+            "corpus_verified_at": freshness["corpus_verified_at"],
+            "coverage_notice": freshness["coverage_notice"],
+            "source_health": freshness["source_health"],
+            "related_services": [],
+            "answer_sections": None,
+            "related_judicial": [],
+            "related_drafts": [],
+            "query_analysis": _analysis_summary(analysis, None),
+        }
+
     retrieved: list[RetrievedArticle] = []
     retrieved_trace: list[dict] = []
     cited: list[RetrievedArticle] = []
@@ -350,10 +611,13 @@ def answer_question(
     forthcoming: list[dict] = []
     error: str | None = None
     failed = False
-    language = None
+    language = analysis.language
     answer_ar, status = INSUFFICIENT_AR, "insufficient_evidence"
     citations: list[dict] = []
-    freshness = _freshness_fields(session, settings)
+    sections: dict | None = None
+    judicial: list[dict] = []
+    drafts: list[dict] = []
+    interpreted_with: str | None = None
     # Service discovery is deliberately independent of legal evidence. A useful official
     # transaction may be shown even when the corpus cannot support a legal answer.
     related_services = suggest_official_services(
@@ -366,7 +630,7 @@ def answer_question(
     cached = None
     if settings.answer_cache_size > 0:
         cache_key = (
-            "structured-answer-v9",
+            "structured-answer-v11",
             normalize_ar(query),
             domain,
             as_of,
@@ -381,20 +645,38 @@ def answer_question(
         answer_ar, status, citations = cached["answer_ar"], cached["answer_status"], cached["citations"]
         caveats, forthcoming, language = cached["caveats"], cached["forthcoming"], cached["language"]
         retrieved_trace, cited_ids = cached["retrieved"], cached["cited_ids"]
+        sections, judicial, drafts = cached["sections"], cached["judicial"], cached["drafts"]
+        interpreted_with = cached["interpreted_with"]
         timings["cache_hit"] = 1
     else:
         try:
+            # 2) Retrieval runs on the user's own words first. When they find nothing strong, the
+            #    formal legal phrasing of the recognised intent is tried (dialect -> legal terms).
             t = time.perf_counter()
             result = retrieve(session, query=query, as_of=as_of, domain=domain, embedder=embedder, settings=settings)
+            strong = [r for r in result.items if r.strong]
+            if not strong:
+                for expansion in analysis.expansions:
+                    alternative = retrieve(session, query=expansion, as_of=as_of, domain=domain, embedder=embedder,
+                                           settings=settings)  # fmt: skip
+                    if any(r.strong for r in alternative.items):
+                        result, interpreted_with = alternative, expansion
+                        break
             timings["retrieval"] = int((time.perf_counter() - t) * 1000)
-            retrieved, language = result.items, result.language
+            retrieved = result.items
+            language = result.language
             strong = _order_evidence_for_question(query, [r for r in retrieved if r.strong])
             hinted_ids = {uuid.UUID(value) for value in result.instrument_hints}
             upcoming = _forthcoming_versions(session, hinted_ids | {r.instrument_id for r in strong}, as_of)
+            search_tokens = list(dict.fromkeys(result.query_tokens + lexical_tokens(" ".join(analysis.expansions[:1]))))
+            judicial_candidates = _related_judicial(session, search_tokens) if strong else []
+            drafts = _related_drafts(session, result.query_tokens) if analysis.wants_draft else []
             # Everything the answer needs from the database is loaded: hand the connection back to
             # the pool so a slow model call does not hold it (the trace write takes a new one).
             session.commit()
 
+            draft: Draft | None = None
+            by_eid: dict = {}
             if strong:
                 evidence = [
                     Evidence(
@@ -410,10 +692,16 @@ def answer_question(
                     for i, item in enumerate(strong, start=1)
                 ]
                 by_eid = dict(zip((ev.eid for ev in evidence), strong, strict=True))
+                context = {
+                    "register": analysis.register,
+                    "legal_issue": analysis.intents[0].label_ar if analysis.intents else None,
+                    "facts_to_confirm": analysis.facts_to_confirm,
+                    "entities": analysis.entities,
+                }
                 t = time.perf_counter()
                 draft = _traffic_speed_table_draft(query, evidence)
                 if draft is None:
-                    draft, _notes, error = _draft_with_validation(llm, query, as_of, evidence)
+                    draft, _notes, error = _draft_with_validation(llm, query, as_of, evidence, context)
                 timings["generation"] = int((time.perf_counter() - t) * 1000)
 
                 if draft.answer_status != "insufficient_evidence":
@@ -429,11 +717,14 @@ def answer_question(
                         status = "partial"
                         caveats.append("وُجدت نسختان معتمدتان متعارضتان سارّيتان في التاريخ نفسه؛ أُحيل الأمر للمراجعة.")
                     # A question with a single content word cannot identify one rule: qualify the answer.
-                    if len(result.query_tokens) <= 1 and not result.article_hints:
+                    if len(result.query_tokens) <= 1 and not result.article_hints and interpreted_with is None:
                         status = "partial"
                         caveats.append("السؤال عام؛ يُرجى تحديد النظام أو الموضوع المقصود للحصول على إجابة أدق.")
+                    if interpreted_with is not None and analysis.intents:
+                        caveats.append(f"فُهم سؤالك على أنه عن: {analysis.intents[0].label_ar}.")
                     temporal, forthcoming = _temporal_notes(cited, as_of, today, upcoming)
                     caveats.extend(temporal)
+                    judicial = judicial_candidates
             elif upcoming:
                 forthcoming = upcoming
                 first = upcoming[0]
@@ -449,13 +740,15 @@ def answer_question(
                 caveats.append("البحث الدلالي غير متاح مؤقتاً؛ اعتمدت النتائج على البحث النصي فقط.")
             if language == "en" and status != "insufficient_evidence":
                 caveats.append("النص العربي الرسمي هو المرجع الحاكم.")
+            citations = [_citation(c, as_of) for c in cited]
+            sections = _sections(answer_ar, status, citations, draft, analysis, by_eid)
         except Exception as exc:  # never return a half-built legal answer
             log.exception("chat_pipeline_failed")
             session.rollback()
             error = f"{type(exc).__name__}"
             failed = True
             answer_ar, status, cited, caveats, forthcoming = ERROR_AR, "insufficient_evidence", [], [], []
-        citations = [_citation(c, as_of) for c in cited]
+            citations, sections, judicial, drafts = [], None, [], []
         retrieved_trace = [r.trace() for r in retrieved]
         cited_ids = [str(c.article_id) for c in cited]
         caveats = list(dict.fromkeys(caveats))
@@ -466,7 +759,8 @@ def answer_question(
                 {
                     "answer_ar": answer_ar, "answer_status": status, "citations": citations, "caveats": caveats,
                     "forthcoming": forthcoming, "language": language, "retrieved": retrieved_trace,
-                    "cited_ids": cited_ids,
+                    "cited_ids": cited_ids, "sections": sections, "judicial": judicial, "drafts": drafts,
+                    "interpreted_with": interpreted_with,
                 },  # fmt: skip
                 settings.answer_cache_size,
             )
@@ -474,29 +768,9 @@ def answer_question(
     if freshness["source_health"] != "healthy" and freshness["freshness_warning_ar"] and status != "insufficient_evidence":
         caveats = [*caveats, freshness["freshness_warning_ar"]]
 
-    latency_ms = int((time.perf_counter() - started) * 1000)
-    timings["total"] = latency_ms
-    session.add(
-        QueryTrace(
-            id=trace_id,
-            query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
-            query_text=query if settings.trace_store_query_text else None,
-            query_language=language,
-            domain=domain,
-            as_of_date=as_of,
-            retrieved=retrieved_trace,
-            retrieved_version_ids=sorted({r["version_id"] for r in retrieved_trace}),
-            cited_article_ids=cited_ids,
-            response_status="error" if failed else status,
-            error=error,
-            latency_ms=latency_ms,
-            timings_ms=timings,
-            llm_model=llm.model_name,
-            embedding_model=embedder.model_name,
-            auto_delete_at=datetime.now(UTC) + timedelta(days=settings.trace_retention_days),
-        )
-    )
-    session.commit()
+    _write_trace(session, settings, trace_id=trace_id, query=query, language=language, domain=domain, as_of=as_of,
+                 retrieved_trace=retrieved_trace, cited_ids=cited_ids, status="error" if failed else status,
+                 error=error, started=started, timings=timings, llm=llm, embedder=embedder)  # fmt: skip
 
     return {
         "answer_ar": answer_ar,
@@ -511,4 +785,8 @@ def answer_question(
         "coverage_notice": freshness["coverage_notice"],
         "source_health": freshness["source_health"],
         "related_services": related_services,
+        "answer_sections": sections,
+        "related_judicial": judicial,
+        "related_drafts": drafts,
+        "query_analysis": _analysis_summary(analysis, interpreted_with),
     }

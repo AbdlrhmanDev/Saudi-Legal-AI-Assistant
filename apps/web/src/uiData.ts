@@ -25,6 +25,21 @@ const PILLS: Record<string, [string, string, string]> = {
   healthy: ['محدّثة', '#E2EFE7', '#17543D'],
   delayed: ['متأخرة', '#FBF0D9', '#7A4F00'],
   degraded: ['غير مؤكدة', '#F8E3E1', '#8E2626'],
+  out_of_scope: ['خارج النطاق', '#ECEBE6', '#4A4F4C'],
+  draft_status: ['مشروع غير نافذ', '#FBF0D9', '#7A4F00'],
+  // official source registry: reachability and integration
+  unknown: ['لم يُفحص', '#ECEBE6', '#4A4F4C'],
+  available: ['متاح', '#E2EFE7', '#17543D'],
+  unavailable: ['غير متاح', '#F8E3E1', '#8E2626'],
+  blocked: ['محجوب عن الأدوات الآلية', '#F8E3E1', '#8E2626'],
+  robots_disallowed: ['يمنعه robots.txt', '#F8E3E1', '#8E2626'],
+  integrated: ['مدمج', '#E2EFE7', '#17543D'],
+  discovery_only: ['رصد تغييرات فقط', '#FBF0D9', '#7A4F00'],
+  not_integrated: ['غير مدمج', '#ECEBE6', '#4A4F4C'],
+  consolidated: ['مدمج مع مصدر آخر', '#E4EAF4', '#28467A'],
+  changed: ['تغيّر', '#E4EAF4', '#28467A'],
+  no_change: ['لا تغيير', '#ECEBE6', '#4A4F4C'],
+  skipped: ['تخطّي', '#ECEBE6', '#4A4F4C'],
 }
 const FALLBACK: [string, string, string] = ['—', '#ECEBE6', '#4A4F4C']
 
@@ -84,7 +99,14 @@ export const todayIso = () => {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
 }
 
-export const DOMAIN_AR: Record<string, string> = { labor: 'العمل', commercial: 'الشركات', data_protection: 'حماية البيانات', other: 'أخرى' }
+export const DOMAIN_AR: Record<string, string> = {
+  labor: 'العمل', commercial: 'التجارة والشركات', data_protection: 'حماية البيانات', other: 'أخرى', real_estate: 'العقار',
+  tax_customs: 'الزكاة والضريبة والجمارك', banking_finance: 'البنوك والتمويل', capital_markets: 'السوق المالية', insurance: 'التأمين',
+  investment: 'الاستثمار', social_insurance: 'التأمينات الاجتماعية', health: 'الصحة', food_drug: 'الغذاء والدواء', transport: 'النقل',
+  municipal: 'البلديات والإسكان', cybersecurity: 'الأمن السيبراني', digital_telecom: 'الاتصالات والحكومة الرقمية',
+  intellectual_property: 'الملكية الفكرية', judicial: 'القضاء والأحوال الشخصية', administrative: 'الإدارة العامة', criminal: 'الجزائي',
+  consumer: 'حماية المستهلك', competition: 'المنافسة',
+}
 export const TYPE_AR: Record<string, string> = { law: 'نظام', implementing_regulation: 'لائحة تنفيذية', regulation: 'لائحة', guidance: 'دليل إرشادي', notice: 'تعميم', draft: 'مشروع', other: 'وثيقة' }
 export const CLASS_AR: Record<string, string> = { new_law: 'نظام جديد', amendment: 'تعديل نظام', repeal: 'إلغاء نظام', regulation: 'لائحة أو قواعد', royal_decree: 'أمر أو مرسوم ملكي', decision: 'قرار', circular: 'تعميم', notice: 'إشعار أو إعلان', draft: 'مشروع أو مسودة', irrelevant: 'غير ذي صلة' }
 export const REASON_AR: Record<string, string> = {
@@ -105,6 +127,8 @@ export const REASON_AR: Record<string, string> = {
   EMBEDDING_BUDGET_EXCEEDED: 'تجاوز حد الفهرسة لهذه الليلة؛ ستُعاد المحاولة',
   INDEX_HEALTH_FAILED: 'فشل فحص سلامة الفهرس؛ بقي الفهرس السابق',
   PUBLISH_FAILED: 'تعذّر النشر؛ ستُعاد المحاولة',
+  NOT_A_LEGAL_CHANGE: 'ليس تغييرًا نظاميًا (مشروع أو خبر أو إشعار)',
+  STATUS_NOT_IN_FORCE: 'حالة النظام لدى هيئة الخبراء ليست «ساري»',
 }
 export const WARNING_AR: Record<string, string> = { possible_prompt_injection: 'يحتوي النص على عبارات تبدو تعليمات موجهة للمساعد', possible_partial_amendment_document: 'قد تكون الوثيقة مقتصرة على المواد المعدّلة وليست نصًا موحدًا', no_articles_detected: 'لم تُكتشف مواد مرقّمة في الوثيقة' }
 export const GAP_AR: Record<string, string> = { source_url: 'رابط المصدر', source_url_not_allowlisted: 'المصدر خارج القائمة المعتمدة', issuing_authority: 'الجهة المصدرة', published_at: 'تاريخ النشر', effective_from: 'تاريخ النفاذ' }

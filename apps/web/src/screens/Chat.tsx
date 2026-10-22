@@ -11,7 +11,7 @@ const DOMAINS: [string, string][] = [
   ['commercial', 'الشركات'],
   ['data_protection', 'حماية البيانات'],
 ]
-const SUGGESTIONS = ['ما الذي ينص عليه نظام العمل بشأن فترة التجربة؟', 'هل يجوز نقل البيانات الشخصية خارج المملكة؟', 'ما عقوبة التستر التجاري؟']
+const SUGGESTIONS = ['ما الذي ينص عليه نظام العمل بشأن فترة التجربة؟', 'هل يجوز نقل البيانات الشخصية خارج المملكة؟', 'وش عقوبة التستر التجاري؟', 'كم مخالفة قطع الإشارة؟']
 const PAGE_CHROME = new Set([
   'الرئيسية', 'القرارات', 'الديوان الملكي', 'قرارات مجلس الوزراء', 'قرارات وزارية', 'أوامر ملكية',
   'هيئة الخبراء بمجلس الوزراء', 'لوائح وأنظمة', 'مراسيم ملكية', 'هيئات', 'خريطة الموقع', 'تابعنا على',
@@ -241,7 +241,26 @@ export function Chat({ chat, freshness }: { chat: ChatController; freshness: Fre
   )
 }
 
+const sectionHead = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: '#3F4541', marginBottom: 10 } as const
+const COURT_LEVEL_AR: Record<string, string> = { first_instance: 'محكمة الدرجة الأولى', appeal: 'الاستئناف', supreme: 'المحكمة العليا', committee: 'لجنة شبه قضائية', unknown: '' }
+
+/** «غير متوفر معلومات عن ذا الشي» — the fixed sentence for anything outside Saudi law, shown alone. */
+function OutOfScope({ text }: { text: string }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <Logo size={30} />
+      <article style={{ background: '#fff', border: '1px solid #E4E0D6', borderRadius: 16, padding: '14px 22px', fontSize: 16, lineHeight: 1.9 }}>
+        {text}
+      </article>
+    </div>
+  )
+}
+
 function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; latencyMs: number; selected: Citation | null; onOpen: (c: Citation) => void }) {
+  if (answer.answer_status === 'out_of_scope') return <OutOfScope text={answer.answer_ar} />
+  const sections = answer.answer_sections ?? null
+  const citationNumber = (articleId: string) => answer.citations.findIndex((c) => c.article_id === articleId)
+  const actions = sections?.actions ?? []
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
       <Logo size={30} />
@@ -253,6 +272,7 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
           </span>
         </div>
         <div style={{ padding: '14px 22px 4px', fontSize: 16, lineHeight: 1.9, textWrap: 'pretty' }}>
+          {sections && <h3 style={{ margin: '0 0 6px', fontSize: 13.5, fontWeight: 700, color: '#1F5F4A' }}>{sections.headings.answer}</h3>}
           <AnswerText text={answer.answer_ar} />
           {answer.citations.length > 0 && (
             <span aria-label="مصادر الإجابة" style={{ display: 'inline-flex', gap: 5, marginTop: 10 }}>
@@ -264,13 +284,33 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
             </span>
           )}
         </div>
+        {sections && actions.length > 0 && (
+          <section aria-label={sections.headings.actions} style={{ padding: '12px 22px 2px' }}>
+            <h3 style={{ ...sectionHead, margin: '0 0 8px', fontSize: 13.5, fontWeight: 700, color: '#1F5F4A' }}>{sections.headings.actions}</h3>
+            <ul style={{ margin: 0, paddingInlineStart: 22, display: 'grid', gap: 6, fontSize: 14.5, lineHeight: 1.8 }}>
+              {actions.map((action) => (
+                <li key={action.kind + action.text}>
+                  {action.kind === 'fact_to_confirm' ? `حدّد: ${action.text}` : action.text}
+                  {action.article_ids.map((id) => {
+                    const index = citationNumber(id)
+                    return index < 0 ? null : (
+                      <button key={id} onClick={() => onOpen(answer.citations[index])} aria-label={`فتح المصدر ${index + 1}`} style={{ marginInlineStart: 6, border: 0, background: '#1F5F4A', color: '#fff', fontSize: 10.5, fontWeight: 700, borderRadius: '50%', width: 18, height: 18, padding: 0, cursor: 'pointer' }}>
+                        {index + 1}
+                      </button>
+                    )
+                  })}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         {answer.citations.length > 0 && (
           <div style={{ padding: '14px 22px 2px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: '#3F4541', marginBottom: 10 }}>
+            <div style={sectionHead}>
               <span style={{ color: '#1F5F4A', display: 'flex' }}>
                 <Icon d={ICON.openBook} size={16} />
               </span>
-              الأساس النظامي
+              {sections?.headings.sources ?? 'الأساس النظامي'}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {answer.citations.map((c, i) => {
@@ -285,7 +325,8 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
                           {c.law_title_ar} — {c.article_label ?? 'نص الوثيقة'}
                         </span>
                         <span style={{ fontSize: 12.5, color: '#5E655F' }}>
-                          سارية منذ {fmtDate(c.effective_from)}
+                          {c.issuing_authority ? `${c.issuing_authority} · ` : ''}
+                          {c.status_basis === 'publisher_status' && !c.effective_to ? `ساري وفق هيئة الخبراء (تحقق في ${fmtDate(c.effective_from)})` : `سارية منذ ${fmtDate(c.effective_from)}`}
                           {c.effective_to ? ` · حتى ${fmtDate(c.effective_to)}` : ''}
                           {c.is_test_data ? ' · بيانات تجريبية' : ''}
                         </span>
@@ -303,6 +344,55 @@ function Answer({ answer, latencyMs, selected, onOpen }: { answer: ChatAnswer; l
               })}
             </div>
           </div>
+        )}
+        {(answer.related_judicial?.length ?? 0) > 0 && (
+          <section aria-label="أحكام قضائية منشورة ذات صلة" style={{ padding: '14px 22px 2px' }}>
+            <div style={sectionHead}>
+              <span style={{ color: '#28467A', display: 'flex' }}><Icon d={ICON.shield} size={16} /></span>
+              أحكام قضائية منشورة ذات صلة
+              <span style={{ color: '#7A807B', fontWeight: 400 }}>— للاسترشاد فقط، ليست قواعد ملزمة ولم تُستخدم دليلًا</span>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {answer.related_judicial?.map((j) => (
+                <div key={j.id} style={{ border: '1px solid #D3DCEB', background: '#F5F7FB', borderRadius: 12, padding: '10px 14px', display: 'grid', gap: 4 }}>
+                  <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#28467A', flex: 1 }}>{j.title}</span>
+                    {j.source_url && (
+                      <a href={j.source_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', color: '#28467A', fontSize: 12, fontWeight: 700 }}>
+                        المصدر الرسمي <Icon d={ICON.external} size={14} />
+                      </a>
+                    )}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#5E655F' }}>
+                    {[j.court_name, COURT_LEVEL_AR[j.court_level], j.city, j.hijri_date ? `${j.hijri_date} هـ` : null, j.finality_status === 'final' ? 'نهائي' : 'نهائية الحكم غير منشورة'].filter(Boolean).join(' · ')}
+                  </span>
+                  <span style={{ fontSize: 13, lineHeight: 1.7, color: '#3F4541' }}>{j.excerpt}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+        {(answer.related_drafts?.length ?? 0) > 0 && (
+          <section aria-label="مشاريع أنظمة مطروحة للاستطلاع" style={{ padding: '14px 22px 2px' }}>
+            <div style={sectionHead}>
+              <span style={{ color: '#7A4F00', display: 'flex' }}><Icon d={ICON.warn} size={16} /></span>
+              مشاريع مطروحة لاستطلاع الرأي
+              <span style={{ color: '#7A807B', fontWeight: 400 }}>— ليست أنظمة نافذة</span>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {answer.related_drafts?.map((d) => (
+                <div key={d.title} style={{ border: '1px dashed #E2B65A', background: '#FFFBF2', borderRadius: 12, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{d.title}</span>
+                  <Pill k="draft_status" size={11} dot={false} />
+                  {d.official_url && (
+                    <a href={d.official_url} target="_blank" rel="noopener noreferrer" style={{ color: '#7A4F00', fontSize: 12, fontWeight: 700 }}>
+                      صفحة المشروع
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
         )}
         {(answer.related_services?.length ?? 0) > 0 && (
           <section aria-label="خدمات حكومية ذات صلة" style={{ padding: '14px 22px 2px' }}>

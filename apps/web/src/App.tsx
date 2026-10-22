@@ -4,6 +4,7 @@ import type { Candidate, Coverage, Freshness, Page, QuarantineItem, User } from 
 import { Chat } from './screens/Chat'
 import { Corpus } from './screens/Corpus'
 import { Ops } from './screens/Ops'
+import { Sources } from './screens/Sources'
 import { Updates } from './screens/Updates'
 import { Icon, Logo } from './ui'
 import { DOMAIN_AR, ICON, fmtRiyadh } from './uiData'
@@ -11,11 +12,12 @@ import type { Flash } from './uiData'
 import { useChat } from './useChat'
 import { getGuestChatOwner } from './chatStorage'
 
-type Screen = 'chat' | 'corpus' | 'updates' | 'ops'
+type Screen = 'chat' | 'corpus' | 'updates' | 'sources' | 'ops'
 
 const NAV: { key: Screen; label: string; icon: string }[] = [
   { key: 'corpus', label: 'المدونة النظامية', icon: ICON.book },
   { key: 'updates', label: 'التحديثات', icon: ICON.refresh },
+  { key: 'sources', label: 'المصادر الرسمية', icon: ICON.shield },
   { key: 'ops', label: 'العمليات والتقييم', icon: ICON.pulse },
 ]
 const HEALTH_DOT = { healthy: '#2E7D5B', delayed: '#C08A1E', degraded: '#9B2C2C' } as const
@@ -170,6 +172,7 @@ export default function App({ onLogin, onLogout }: { onLogin: () => void; onLogo
         {active === 'chat' && <Chat chat={chat} freshness={freshness} />}
         {active === 'corpus' && <Corpus flash={flash} onChanged={refreshShell} onOpenReview={() => setScreen('updates')} />}
         {active === 'updates' && <Updates flash={flash} onChanged={refreshShell} asOf={chat.asOf} />}
+        {active === 'sources' && <Sources flash={flash} />}
         {active === 'ops' && <Ops />}
       </main>
 

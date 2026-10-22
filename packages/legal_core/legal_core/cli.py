@@ -6,6 +6,8 @@
     python -m legal_core.cli purge-test-data   # remove test/demo rows and rebuild the active index
     python -m legal_core.cli reindex-approved  # rebuild approved text with the configured embedding model
     python -m legal_core.cli sync-now          # run the full official synchronization immediately
+    python -m legal_core.cli probe-sources     # check every registered official source and record its health
+                                               # (--dry-run: print the report without saving it)
     python -m legal_core.cli nightly-sync      # run every due Asia/Riyadh daily sync once, then exit
                                                # (Kubernetes CronJob / external scheduler entry point)
 """
@@ -15,6 +17,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import bcrypt
 from sqlalchemy import delete, or_, select, update
@@ -44,18 +47,8 @@ from legal_core.models import (
     User,
 )
 from legal_core.review import approve_candidate
+from legal_core.source_catalog import LEGACY_NAMES, SOURCES, crawl_policy, integration_status
 
-# Starting points from the PRD reference list. Only Umm Al-Qura's verified legal feed is enabled;
-# manual-only portals remain disabled until an administrator reviews their access and reuse terms.
-OFFICIAL_SOURCES = [
-    # Direct feed verification shows that /rssFeed/21 returns decisions-and-regulations URLs.
-    # Entries link to full official text on the same allowlisted host.
-    ("Umm Al-Qura RSS - Decisions & Regulations", "Umm Al-Qura (Official Gazette)", "https://www.uqn.gov.sa/rssFeed/21", "www.uqn.gov.sa", "fetch_allowed", True),
-    ("Bureau of Experts - Saudi Laws Portal", "Bureau of Experts at the Council of Ministers", "https://laws.boe.gov.sa/", "laws.boe.gov.sa", "manual", False),
-    ("HRSD - Labor Law", "Ministry of Human Resources and Social Development", "https://www.hrsd.gov.sa/", "www.hrsd.gov.sa", "manual", False),
-    ("Ministry of Commerce - Regulations", "Ministry of Commerce", "https://mc.gov.sa/ar/Regulations/pages/default.aspx", "mc.gov.sa", "manual", False),
-    ("SDAIA - PDPL Knowledge Center", "Saudi Data & AI Authority", "https://dgp.sdaia.gov.sa/wps/portal/pdp/knowledgecenter/", "dgp.sdaia.gov.sa", "manual", False),
-]  # fmt: skip
 FIXTURE_SOURCE = "TEST FIXTURE - simulated official feed"
 
 
@@ -75,28 +68,60 @@ def create_admin(session: Session, settings: Settings) -> str:
 
 
 def seed_sources(session: Session, settings: Settings) -> str:
-    existing = {s.name: s for s in session.scalars(select(SourceRegistry))}
+    """Mirror the official source catalog (all entries of the approved list) into source_registry.
+
+    Catalog fields are refreshed on every run. `enabled` is set from the catalog only when a row is
+    created or adopted from a pre-catalog registry name; afterwards it is the operator's decision.
+    Automated tests never enable a real source: they must not touch the network.
+    """
+    by_key = {s.source_key: s for s in session.scalars(select(SourceRegistry)) if s.source_key}
+    by_name = {s.name: s for s in session.scalars(select(SourceRegistry))}
     added = updated = 0
-    for name, authority, url, host, policy, enabled in OFFICIAL_SOURCES:
-        source = existing.get(name)
+    for entry in SOURCES:
+        source = by_key.get(entry.key)
+        adopted = False
         if source is None:
-            source = SourceRegistry(name=name, authority=authority, feed_url=url, allowlisted_host=host)
+            legacy = next((name for name, key in LEGACY_NAMES.items() if key == entry.key), None)
+            source = by_name.get(entry.name) or (by_name.get(legacy) if legacy else None)
+            adopted = source is not None
+        if source is None:
+            source = SourceRegistry(name=entry.name, authority=entry.authority, feed_url=entry.endpoint,
+                                    allowlisted_host="")  # fmt: skip
             session.add(source)
             added += 1
+            adopted = True
         else:
             updated += 1
-        source.authority = authority
-        source.feed_url = url
+        host = (urlsplit(entry.endpoint).hostname or "").lower()
+        source.name = entry.name
+        source.source_key = entry.key
+        source.catalog_numbers = list(entry.numbers)
+        source.name_ar = entry.name_ar
+        source.authority = entry.authority
+        source.official_url = entry.url
+        source.feed_url = entry.endpoint
         source.allowlisted_host = host
-        source.crawl_policy = policy
-        # Automated tests supply their own isolated fixture source and must never touch the network.
-        source.enabled = enabled and settings.environment != "test"
+        source.category = entry.category
+        source.authority_tier = entry.tier
+        source.document_kind = entry.document_kind
+        source.connector_type = entry.connector
+        source.connector_config = {"link_patterns": list(entry.link_patterns), "max_items": entry.max_items,
+                                   "hosts": list(entry.hosts)}  # fmt: skip
+        source.default_domain = entry.default_domain
+        source.consolidated_into = entry.consolidated_into
+        source.integration_status = integration_status(entry)
+        source.crawl_policy = crawl_policy(entry)
+        source.access_notes = entry.access_notes
+        if adopted:
+            source.enabled = entry.enabled and entry.connector != "none" and not entry.consolidated_into
+        if settings.environment == "test" or entry.connector == "none" or entry.consolidated_into:
+            source.enabled = False
         source.check_interval = settings.monitor_interval_minutes
         source.is_test_data = False
         session.flush()
         # Repair candidates discovered when this source used the old feed-only policy. They are
         # retried by the next full sync and still pass every release-gate check before publication.
-        if enabled and policy == "fetch_allowed":
+        if source.enabled and source.crawl_policy == "fetch_allowed" and entry.connector == "rss":
             for candidate in session.scalars(
                 select(UpdateCandidate).where(
                     UpdateCandidate.source_id == source.id,
@@ -108,7 +133,28 @@ def seed_sources(session: Session, settings: Settings) -> str:
             ):
                 candidate.document_ref = candidate.canonical_url
                 candidate.state = "failed"
-    return f"official sources added: {added}, updated: {updated}"
+    return f"official sources added: {added}, updated: {updated} (catalog entries: {len(SOURCES)})"
+
+
+def link_relationships(session: Session, settings: Settings) -> str:
+    from legal_core.relationships import link_instruments
+
+    return f"document relationships added: {link_instruments(session)}"
+
+
+def probe_sources(session: Session, settings: Settings, *, dry_run: bool = False) -> str:
+    """Read every catalog source once with its connector and record reachability (no candidates)."""
+    from legal_core.connectors import make_official_http, probe_source
+
+    http = make_official_http(settings)
+    rows = []
+    for source in session.scalars(select(SourceRegistry).where(SourceRegistry.is_test_data.is_(False))
+                                  .order_by(SourceRegistry.category, SourceRegistry.name)):  # fmt: skip
+        result = probe_source(source, http, settings)
+        rows.append({"numbers": source.catalog_numbers, **result})
+    if dry_run:
+        session.rollback()
+    return json.dumps(rows, ensure_ascii=False, indent=1)
 
 
 def seed_fixtures(session: Session, settings: Settings) -> str:
@@ -380,8 +426,10 @@ def main(argv: list[str] | None = None) -> int | None:
         "reindex-approved",
         "nightly-sync",
         "sync-now",
+        "probe-sources",
     ]
     parser.add_argument("command", choices=commands)
+    parser.add_argument("--dry-run", action="store_true", help="probe-sources: report without saving health")
     args = parser.parse_args(argv)
     settings = get_settings()
     settings.assert_safe_for_environment()
@@ -389,10 +437,14 @@ def main(argv: list[str] | None = None) -> int | None:
         return nightly_sync(settings)
     if args.command == "sync-now":
         return sync_now(settings)
+    if args.command == "probe-sources":
+        with session_scope() as session:
+            print(probe_sources(session, settings, dry_run=args.dry_run))
+        return 0
     steps = {
         "create-admin": [create_admin],
         "seed-sources": [seed_sources],
-        "bootstrap": [create_admin, seed_sources, backfill_chunk_hashes],
+        "bootstrap": [create_admin, seed_sources, backfill_chunk_hashes, link_relationships],
         "purge-test-data": [purge_test_data, seed_sources],
         "reindex-approved": [reindex_approved],
     }[args.command]

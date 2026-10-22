@@ -4,7 +4,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Domain = Literal["labor", "commercial", "data_protection", "other"]
+Domain = Literal[
+    "labor", "commercial", "data_protection", "other", "real_estate", "tax_customs", "banking_finance",
+    "capital_markets", "insurance", "investment", "social_insurance", "health", "food_drug", "transport",
+    "municipal", "cybersecurity", "digital_telecom", "intellectual_property", "judicial", "administrative",
+    "criminal", "consumer", "competition",
+]  # fmt: skip
 Classification = Literal[
     "new_law", "amendment", "repeal", "regulation", "royal_decree", "decision", "circular", "notice", "draft",
     "irrelevant",
@@ -82,6 +87,63 @@ class Citation(BaseModel):
     effective_from: date
     effective_to: date | None
     legal_status: str
+    issuing_authority: str | None = None
+    status_basis: str | None = Field(
+        default=None, description="`publisher_status`: verified in force by the official publisher on `effective_from`."
+    )
+    is_test_data: bool
+
+
+class AnswerAction(BaseModel):
+    kind: Literal["legal_step", "fact_to_confirm"]
+    text: str
+    article_ids: list[str] = Field(default_factory=list)
+
+
+class AnswerSource(BaseModel):
+    law_title_ar: str
+    article_label: str | None
+    article_number: str | None
+    issuing_authority: str | None
+    legal_status_ar: str
+    effective_from: date
+    official_url: str | None
+
+
+class AnswerSections(BaseModel):
+    """الجواب / وش تقدر تسوي؟ / المصدر الرسمي. Present only for grounded or partial answers."""
+
+    headings: dict[str, str]
+    answer: str
+    actions: list[AnswerAction]
+    sources: list[AnswerSource]
+
+
+class JudicialReference(BaseModel):
+    """A published judgment shown for orientation. Never evidence for the answer, never binding."""
+
+    id: str
+    title: str
+    material_type: str
+    court_name: str | None
+    court_level: str
+    city: str | None
+    hijri_date: str | None
+    judgment_date: date | None
+    finality_status: str
+    source_url: str | None
+    excerpt: str
+    binding: Literal[False] = False
+    note_ar: str
+    is_test_data: bool
+
+
+class DraftReference(BaseModel):
+    title: str
+    official_url: str | None
+    published_at: date | None
+    legal_status: Literal["draft"] = "draft"
+    note_ar: str
     is_test_data: bool
 
 
@@ -103,7 +165,9 @@ class ChatAnswer(BaseModel):
     """PRD 9.3 answer contract, plus display fields for the UI."""
 
     answer_ar: str
-    answer_status: Literal["grounded", "partial", "insufficient_evidence"]
+    answer_status: Literal["grounded", "partial", "insufficient_evidence", "out_of_scope"] = Field(
+        description="`out_of_scope`: not a Saudi legal question; `answer_ar` is then exactly «غير متوفر معلومات عن ذا الشي»."
+    )
     as_of_date: date
     citations: list[Citation]
     caveats: list[str]
@@ -114,6 +178,12 @@ class ChatAnswer(BaseModel):
     coverage_notice: str
     source_health: Literal["healthy", "delayed", "degraded"]
     related_services: list[RelatedService] = Field(default_factory=list)
+    answer_sections: AnswerSections | None = None
+    related_judicial: list[JudicialReference] = Field(default_factory=list)
+    related_drafts: list[DraftReference] = Field(default_factory=list)
+    query_analysis: dict = Field(
+        default_factory=dict, description="Detected register, legal intents, entities and facts to confirm (no user text)."
+    )
 
 
 class ChatResponse(BaseModel):
@@ -159,6 +229,10 @@ class UpdateCandidatePatch(StrictModel):
     classification: Classification | None = None
     target_instrument_id: uuid.UUID | None = None
     reason: str | None = Field(default=None, max_length=2000)
+
+
+class ProbeRequest(StrictModel):
+    source_id: uuid.UUID | None = Field(default=None, description="Probe one source; default: every source.")
 
 
 class SyncRequest(StrictModel):

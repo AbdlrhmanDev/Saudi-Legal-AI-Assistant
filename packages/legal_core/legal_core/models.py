@@ -35,7 +35,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from legal_core.config import get_settings
 
-DOMAINS = ("labor", "commercial", "data_protection", "other")
+DOMAINS = (
+    "labor", "commercial", "data_protection", "other", "real_estate", "tax_customs", "banking_finance",
+    "capital_markets", "insurance", "investment", "social_insurance", "health", "food_drug", "transport",
+    "municipal", "cybersecurity", "digital_telecom", "intellectual_property", "judicial", "administrative",
+    "criminal", "consumer", "competition",
+)  # fmt: skip
 INSTRUMENT_TYPES = ("law", "implementing_regulation", "regulation", "guidance", "notice", "draft", "other")
 # "quarantined": blocked by the release gate. "evidence": an official notice kept as proof of a
 # change (e.g. a repeal decision) that is never retrievable as legal text itself.
@@ -60,13 +65,23 @@ CLASSIFICATIONS = (
 # Classifications that change binding law and may be published by the release gate.
 PUBLISHABLE_CLASSIFICATIONS = ("new_law", "amendment", "repeal", "regulation")
 CRAWL_POLICIES = ("feed_only", "fetch_allowed", "fixture", "manual")
-JOB_TYPES = ("document_ingest", "feed_sync", "reindex", "nightly_sync")
+JOB_TYPES = ("document_ingest", "feed_sync", "reindex", "nightly_sync", "source_probe")
 SYNC_TRIGGERS = ("scheduled", "catch_up", "manual")
 SYNC_STATUSES = ("queued", "running", "succeeded", "no_op", "partial", "failed")
 GENERATION_STATUSES = ("building", "active", "retired", "failed")
 QUARANTINE_RESOLUTIONS = ("open", "resolved", "superseded")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed", "duplicate")
 ROLES = ("user", "admin")
+# Reachability of a registered endpoint, refreshed by every probe and connector run.
+SOURCE_HEALTH = ("unknown", "available", "degraded", "unavailable", "blocked", "robots_disallowed")
+# What the system actually does with a source (see legal_core.source_catalog).
+INTEGRATION_STATUSES = ("integrated", "discovery_only", "not_integrated", "consolidated")
+COURT_LEVELS = ("first_instance", "appeal", "supreme", "committee", "unknown")
+RELATION_TYPES = ("implementing_regulation_of", "amends", "repeals", "related")
+SOURCE_LOG_STATUSES = ("changed", "no_change", "failed", "skipped")
+# Sources whose publications can never be binding legislation (consultation drafts, news, directories,
+# archives). Their items are excluded by the release gate whatever the item itself looks like.
+NON_LEGISLATIVE_KINDS = ("draft", "news", "directory", "archive")
 
 
 def utcnow() -> datetime:
@@ -238,7 +253,11 @@ class ArticleChunk(Base):
 
 class SourceRegistry(Base):
     __tablename__ = "source_registry"
-    __table_args__ = (CheckConstraint(_in("crawl_policy", CRAWL_POLICIES), name="ck_sources_policy"),)
+    __table_args__ = (
+        CheckConstraint(_in("crawl_policy", CRAWL_POLICIES), name="ck_sources_policy"),
+        CheckConstraint(_in("health_status", SOURCE_HEALTH), name="ck_sources_health"),
+        CheckConstraint(_in("integration_status", INTEGRATION_STATUSES), name="ck_sources_integration"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), unique=True)
@@ -252,6 +271,29 @@ class SourceRegistry(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     is_test_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Catalog metadata (legal_core.source_catalog). feed_url is the endpoint the connector reads;
+    # official_url is the URL exactly as listed in the approved source list.
+    source_key: Mapped[str | None] = mapped_column(String(60), unique=True)
+    catalog_numbers: Mapped[list] = mapped_column(JSON, default=list)
+    name_ar: Mapped[str | None] = mapped_column(Text)
+    official_url: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(2))
+    authority_tier: Mapped[str] = mapped_column(String(20), default="primary")
+    document_kind: Mapped[str] = mapped_column(String(20), default="gazette")
+    connector_type: Mapped[str] = mapped_column(String(30), default="rss")
+    connector_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    default_domain: Mapped[str] = mapped_column(String(40), default="other")
+    consolidated_into: Mapped[str | None] = mapped_column(String(60))
+    integration_status: Mapped[str] = mapped_column(String(20), default="integrated")
+    health_status: Mapped[str] = mapped_column(String(20), default="unknown")
+    health_detail: Mapped[str | None] = mapped_column(Text)
+    last_http_status: Mapped[int | None] = mapped_column(Integer)
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # SHA-256 of the visible text of a watched page; a change is reported, never published.
+    page_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    access_notes: Mapped[str | None] = mapped_column(Text)
+    # Reuse terms of official publications have not been reviewed by counsel for this deployment.
+    licensing_status: Mapped[str] = mapped_column(String(40), default="public_terms_unreviewed")
 
 
 class UpdateCandidate(Base):
@@ -499,3 +541,76 @@ class RateLimitCounter(Base):
     bucket: Mapped[str] = mapped_column(String(200))
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class JudicialDecision(Base):
+    """A published judgment or collection of judicial principles. Kept apart from legislation: a single
+    judgment is never presented as a binding general rule and is never evidence for a legal answer."""
+
+    __tablename__ = "judicial_decisions"
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_id", name="uq_judicial_source_external"),
+        CheckConstraint(_in("court_level", COURT_LEVELS), name="ck_judicial_court_level"),
+        Index("ix_judicial_lexical", "lexical_index", postgresql_using="gin"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("source_registry.id"), index=True)
+    external_id: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, default="")
+    material_type: Mapped[str] = mapped_column(String(30), default="judgment")  # judgment | principles
+    court_name: Mapped[str | None] = mapped_column(Text)
+    court_level: Mapped[str] = mapped_column(String(20), default="unknown")
+    city: Mapped[str | None] = mapped_column(Text)
+    case_number: Mapped[str | None] = mapped_column(String(80))
+    judgment_number: Mapped[str | None] = mapped_column(String(80))
+    hijri_date: Mapped[str | None] = mapped_column(String(20))
+    judgment_date: Mapped[date | None] = mapped_column(Date, index=True)
+    # Finality is rarely published; "unknown" is never displayed as final.
+    finality_status: Mapped[str] = mapped_column(String(20), default="unknown")
+    principles: Mapped[list] = mapped_column(JSON, default=list)
+    text: Mapped[str] = mapped_column(Text, default="")
+    source_url: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("source_snapshots.id"))
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    lexical_text: Mapped[str] = mapped_column(Text, default="")
+    lexical_index: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('simple', lexical_text)", persisted=True)
+    )
+    is_test_data: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class DocumentRelationship(Base):
+    """Instrument-to-instrument links: implementing regulation -> parent law, amendments, repeals."""
+
+    __tablename__ = "document_relationships"
+    __table_args__ = (
+        UniqueConstraint("from_instrument_id", "to_instrument_id", "relation_type", name="uq_document_relationship"),
+        CheckConstraint(_in("relation_type", RELATION_TYPES), name="ck_document_relationship_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    from_instrument_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("legal_instruments.id"), index=True)
+    to_instrument_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("legal_instruments.id"), index=True)
+    relation_type: Mapped[str] = mapped_column(String(40))
+    evidence: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SourceSyncLog(Base):
+    """One connector execution against one source: what it saw, what changed and why it failed."""
+
+    __tablename__ = "source_sync_logs"
+    __table_args__ = (CheckConstraint(_in("status", SOURCE_LOG_STATUSES), name="ck_source_sync_logs_status"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("source_registry.id"), index=True)
+    sync_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sync_runs.id"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20))
+    connector_type: Mapped[str] = mapped_column(String(30))
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)

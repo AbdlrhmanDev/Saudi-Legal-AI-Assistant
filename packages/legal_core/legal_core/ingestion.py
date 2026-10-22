@@ -5,6 +5,7 @@ and is only indexed for retrieval once the release gate (or a reviewer) publishe
 """
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -103,6 +104,16 @@ def _metadata_gaps(version: DocumentVersion, instrument: LegalInstrument, settin
     return gaps
 
 
+_ANNOUNCEMENT_PREFIX = re.compile(r"^(?:اعتماد|الموافقة على|إقرار|إصدار)\s+")
+_GENERIC_TITLES = {"نظام", "لايحه", "دليل", "قواعد", "ضوابط", "قرار", "تعميم", "تنظيم", "اشتراطات", "سياسه"}
+
+
+def _weak_title(title: str) -> bool:
+    """A heading that cannot identify one instrument: empty, numeric, or a bare document-kind word."""
+    words = normalize_ar(title).split()
+    return not words or all(w.isdigit() for w in words) or (len(words) == 1 and words[0] in _GENERIC_TITLES)
+
+
 def _resolve_instrument(
     session: Session, meta: DocumentMetadata, parsed_title: str | None, candidate: UpdateCandidate | None
 ) -> LegalInstrument:
@@ -113,6 +124,10 @@ def _resolve_instrument(
             raise IngestionError("instrument_id does not exist")
         return instrument
     title = (meta.title_ar or parsed_title or "").strip()
+    # Instruments are identified by title, so a weak parsed heading ("دليل", "1") would merge unrelated
+    # documents into one instrument. The official announcement title names the document instead.
+    if not meta.title_ar and candidate is not None and _weak_title(title) and candidate.title.strip():
+        title = _ANNOUNCEMENT_PREFIX.sub("", candidate.title.strip()) or candidate.title.strip()
     if not title:
         raise IngestionError("a document title is required (title_ar) when it cannot be read from the text")
     key = normalize_ar(title)

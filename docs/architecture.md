@@ -36,6 +36,25 @@ All domain logic lives in `packages/legal_core`; the API and the worker are thin
 - `UNIQUE (instrument_id, raw_hash)` — idempotent ingestion. `UNIQUE (source_id, external_id, changed_hash)` — idempotent feed reads.
 - `review_events` is append-only; rollback deactivates, it does not delete.
 
+Official-source and judicial tables (migration 0006):
+
+| Table | Purpose |
+|---|---|
+| `source_registry` | All 39 approved sources: category, authority tier, document kind, connector, health, integration status, access notes |
+| `source_sync_logs` | One row per connector run per source: status, HTTP status, counts, failure reason |
+| `judicial_decisions` | Judgments and principle collections (court, level, Hijri/Gregorian date, finality, text, snapshot); never legislation |
+| `document_relationships` | Instrument-to-instrument links (implementing regulation, amends, repeals) |
+
+Views with the names used in the integration specification read the same rows: `official_sources`,
+`source_connectors`, `legal_documents` (= `legal_instruments`), `legal_document_versions`, `legal_articles`,
+`legal_amendments` (= `amendment_relations`), `legal_chunks` (= `article_chunks`), `retrieval_audit_logs`
+(= `query_traces`). `ingestion_jobs` is a table. A later migration that alters one of the aliased tables must drop
+and recreate its view.
+
+Question analysis (`legal_core/intent.py`) runs before retrieval: the domain guard returns the fixed
+out-of-scope sentence for non-legal questions, and recognised legal intents add a formal-Arabic search query.
+See [dialect_and_scope.md](dialect_and_scope.md).
+
 ## Status model
 
 Stored (version): `needs_review → approved | quarantined | rejected`, `approved → rolled_back`, and

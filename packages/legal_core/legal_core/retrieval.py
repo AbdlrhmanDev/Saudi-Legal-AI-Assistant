@@ -51,6 +51,8 @@ class RetrievedArticle:
     effective_from: date
     effective_to: date | None
     is_test_data: bool
+    issuing_authority: str | None = None
+    status_basis: str | None = None  # "publisher_status": verified in force by the publisher on effective_from
     rank: int = 0
     rrf_score: float = 0.0
     lexical_rank: int | None = None
@@ -111,8 +113,17 @@ def extract_article_hints(query: str) -> list[str]:
     return hints
 
 
+_ARTICLE_EN = re.compile(r"Articles?\s+\(?(\d{1,4})\)?", re.IGNORECASE)
+
+
 def mentioned_article_numbers(text_: str) -> set[str]:
-    return set(extract_article_hints(text_))
+    return set(extract_article_hints(text_)) | set(_ARTICLE_EN.findall(text_))
+
+
+def _status_basis(version: DocumentVersion) -> str | None:
+    gate = (version.validation_evidence or {}).get("gate") or {}
+    evidence = (gate.get("effective_date") or {}).get("evidence") or []
+    return "publisher_status" if any(e.get("kind") == "publisher_status" for e in evidence) else None
 
 
 def rrf_fuse(rankings: list[list[uuid.UUID]], k: int) -> dict[uuid.UUID, float]:
@@ -441,6 +452,8 @@ def retrieve(
                 effective_from=version.effective_from,
                 effective_to=version.effective_to,
                 is_test_data=version.is_test_data,
+                issuing_authority=instrument.issuing_authority or version.source_authority,
+                status_basis=_status_basis(version),
                 rank=rank,
                 # The exact lexical winner may be retained in addition to the fused top-k
                 # (important for numeric tables).  It can be absent from a filtered RRF

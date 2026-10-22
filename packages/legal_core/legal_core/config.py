@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     fetch_backoff_seconds: float = 2.0
     fetch_min_interval_seconds: float = 1.0  # politeness delay between requests to one host
     respect_robots_txt: bool = True
+    include_catalog_hosts: bool = True  # hosts of legal_core.source_catalog are fetchable
+    # Per-source politeness: each catalog source sets how many documents one run may fetch (10 for the
+    # 500-law Bureau of Experts archive, 50 for the daily gazette feed); this is the global ceiling. The rest
+    # wait for the next night (backlog), so a first run against a large listing does not hammer the publisher.
+    connector_max_acquisitions_per_source: int = 50
+    connector_max_judgments_per_run: int = 20
+    # Consolidated law pages already held are re-read this often to detect amendments.
+    connector_refresh_days: int = 7
+    connector_max_refreshes_per_source: int = 5
+    probe_timeout_seconds: float = 20.0
 
     # Nightly synchronization (PRD v2 section 6)
     sync_timezone: str = "Asia/Riyadh"
@@ -145,7 +155,12 @@ class Settings(BaseSettings):
 
     @property
     def allowlisted_hosts(self) -> set[str]:
-        return {h.strip().lower() for h in self.source_allowlist.split(",") if h.strip()}
+        """Configured hosts plus the hosts of the code-reviewed official source catalog. Database rows
+        cannot extend this set, so an edited registry row can never point the fetcher elsewhere."""
+        from legal_core.source_catalog import CATALOG_HOSTS
+
+        configured = {h.strip().lower() for h in self.source_allowlist.split(",") if h.strip()}
+        return configured | set(CATALOG_HOSTS) if self.include_catalog_hosts else configured
 
     def assert_safe_for_environment(self) -> None:
         if self.environment == "production":

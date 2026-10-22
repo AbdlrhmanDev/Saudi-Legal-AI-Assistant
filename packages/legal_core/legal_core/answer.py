@@ -163,8 +163,8 @@ def _validate(draft: Draft, evidence: list[Evidence], query: str | None = None) 
         return f"answer mentions article numbers {sorted(stray)} that are not supported by the cited evidence"
     for step in draft.steps:
         cited = [c for c in step.get("citations", [])]
-        if not cited or any(c not in by_id for c in cited):
-            return "every practical step must cite evidence ids from the evidence set"
+        if not cited or any(c not in by_id or c not in draft.citation_ids for c in cited):
+            return "every practical step must cite evidence ids that the answer itself cites"
         step_allowed = {by_id[c].article_number for c in cited if by_id[c].article_number}
         for c in cited:
             step_allowed |= mentioned_article_numbers(by_id[c].text)
@@ -385,7 +385,12 @@ def _known_titles(session: Session) -> list[str]:
 
 def analyze_for_answer(session: Session, query: str, settings: Settings) -> QueryAnalysis:
     """Deterministic analysis; a configured model is consulted only for borderline scope decisions."""
-    titles = _known_titles(session)
+    try:
+        titles = _known_titles(session)
+    except Exception:  # titles only strengthen the guard; never fail the request
+        log.exception("known_titles_unavailable")
+        session.rollback()
+        titles = []
     analysis = analyze_query(query, known_titles=titles)
     if is_borderline(analysis) and settings.environment != "test":
         classifier = get_scope_classifier(settings)
@@ -664,7 +669,7 @@ def answer_question(
                         break
             timings["retrieval"] = int((time.perf_counter() - t) * 1000)
             retrieved = result.items
-            language = result.language
+            language = analysis.language if interpreted_with else result.language
             strong = _order_evidence_for_question(query, [r for r in retrieved if r.strong])
             hinted_ids = {uuid.UUID(value) for value in result.instrument_hints}
             upcoming = _forthcoming_versions(session, hinted_ids | {r.instrument_id for r in strong}, as_of)

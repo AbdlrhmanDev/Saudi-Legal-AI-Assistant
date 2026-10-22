@@ -12,7 +12,7 @@ from datetime import date
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, not_, select
+from sqlalchemy import not_, select
 from sqlalchemy.orm import Session
 
 from legal_core.agent import AgentProposal
@@ -24,6 +24,7 @@ from legal_core.models import (
     DocumentVersion,
     SourceSnapshot,
     UpdateCandidate,
+    deferred_backlog,
 )
 from legal_core.parser import parse_boe_metadata
 from legal_core.review import authoritative_versions
@@ -179,7 +180,8 @@ def evaluate(
         published_at=version.published_at,
         consolidated_amendment=decision.kind == "amendment",
     )
-    if effective.value is None and decision.kind != "repeal":
+    # Only when the text gives no date at all; conflicting or Hijri-only dates stay quarantined.
+    if effective.reason_code in ("EFFECTIVE_DATE_MISSING", "PUBLICATION_DATE_MISSING") and decision.kind != "repeal":
         verified = _publisher_status(session, candidate, version, effective)
         if verified is not None:
             if verified.reason_code:
@@ -243,12 +245,7 @@ def _publisher_status(
 def unprocessed_candidates(session: Session, limit: int) -> list[UpdateCandidate]:
     """Feed/agent candidates the gate has not decided yet, oldest first. Documents whose fetch was
     deferred by a connector's politeness budget (backlog) are not judged until they are fetched."""
-    backlog = and_(
-        UpdateCandidate.state == "candidate",
-        UpdateCandidate.document_ref.is_not(None),
-        UpdateCandidate.proposed_version_id.is_(None),
-        UpdateCandidate.classification.not_in(("irrelevant", "draft", "notice")),
-    )
+    backlog = deferred_backlog()
     return list(
         session.scalars(
             select(UpdateCandidate)

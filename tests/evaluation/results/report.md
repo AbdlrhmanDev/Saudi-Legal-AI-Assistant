@@ -1,6 +1,6 @@
 # Evaluation report (measured)
 
-- Generated: 2026-10-22T00:52:10+00:00
+- Generated: 2026-10-22T01:01:11+00:00
 - Corpus: FICTIONAL fixture corpus (test data) - not the official pilot corpus
 - Embeddings: `hash-ngram-1536` · Answer model: `extractive-focused-v2` · Mode: offline
 - Cases: 34
@@ -13,7 +13,7 @@
 | Abstention on out-of-corpus | 100.0% | ≥100% | yes |
 | Effective-date scenarios | 100.0% | ≥100% | yes |
 
-Latency (ms): p50 25.5, p95 38, max 46.
+Latency (ms): p50 30.0, p95 55, max 98.
 
 | Class | Passed | Total |
 |---|---|---|

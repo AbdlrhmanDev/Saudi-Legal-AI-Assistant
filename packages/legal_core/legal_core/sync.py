@@ -364,8 +364,8 @@ def _quarantine(
 
 
 def _probe_idle_sources(ctx: _Context) -> int:
-    """Every registered source is checked nightly: sources that were not read by a connector (disabled,
-    or with no permitted access path) get a reachability probe so their reported health stays current.
+    """Sources with no permitted harvest path (connector `none`) get a nightly reachability probe so their
+    reported health stays current. Sources an operator disabled are not contacted at all.
     Automated tests never reach the network."""
     if ctx.settings.environment == "test":
         return 0
@@ -375,7 +375,8 @@ def _probe_idle_sources(ctx: _Context) -> int:
     with ctx.session_factory() as session:
         idle = session.scalars(
             select(SourceRegistry).where(
-                SourceRegistry.enabled.is_(False),
+                # Sources without a harvest path only; an operator-disabled source is never contacted.
+                SourceRegistry.connector_type == "none",
                 SourceRegistry.consolidated_into.is_(None),
                 SourceRegistry.is_test_data.is_(False),
             )

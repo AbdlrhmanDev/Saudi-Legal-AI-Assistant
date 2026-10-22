@@ -31,11 +31,13 @@ from legal_core.ingestion import DocumentMetadata, ingest_document
 from legal_core.intent import infer_domain
 from legal_core.models import (
     DOMAINS,
+    NOT_FETCHED_CLASSIFICATIONS,
     JudicialDecision,
     LegalInstrument,
     SourceRegistry,
     SourceSyncLog,
     UpdateCandidate,
+    deferred_backlog,
     utcnow,
 )
 from legal_core.normalize import lexical_tokens, normalize_ar
@@ -344,7 +346,7 @@ def is_due(source: SourceRegistry, now: datetime) -> bool:
 
 
 # Classifications that can never become binding text, so their documents are never fetched.
-_NOT_FETCHED = ("irrelevant", "draft", "notice")
+_NOT_FETCHED = NOT_FETCHED_CLASSIFICATIONS
 
 
 def _classification_for(source: SourceRegistry, title: str, summary: str) -> str:
@@ -392,10 +394,7 @@ def _backlog(session: Session, source: SourceRegistry, limit: int) -> list[Updat
                 # linking to the Bureau of Experts), so the backlog drains whichever source runs.
                 (UpdateCandidate.source_id == source.id)
                 | (UpdateCandidate.evidence["discovered_via"].as_string() == (source.source_key or "")),
-                UpdateCandidate.state == "candidate",
-                UpdateCandidate.document_ref.is_not(None),
-                UpdateCandidate.proposed_version_id.is_(None),
-                UpdateCandidate.classification.not_in(_NOT_FETCHED),
+                deferred_backlog(),
             )
             .order_by(UpdateCandidate.discovered_at, UpdateCandidate.id)
             .limit(limit)
@@ -427,7 +426,6 @@ def _refresh_known_document(
     content = fetch_with_retries(fetch, known.document_ref or known.canonical_url, settings, on_retry)
     checksum = hashlib.sha256(content).hexdigest()
     counts["refreshed"] += 1
-    known.evidence = {**(known.evidence or {}), "last_refreshed_at": now.isoformat()}
     version = known.proposed_version
     if version is not None and version.raw_hash == checksum:
         return
@@ -601,7 +599,8 @@ def sync_source(
         if any(k.changed_hash == fingerprint for k in known) or (listing and known):
             counts["unchanged"] += 1
             # A listing only names documents; amendments to a consolidated law appear in its page.
-            latest = known[0]
+            # The held version, not a newer refresh attempt that was excluded or rejected.
+            latest = next((k for k in known if k.proposed_version_id and k.state in ("approved", "quarantined", "needs_review")), known[0])
             if (
                 listing
                 and refresh_budget > 0
@@ -609,6 +608,9 @@ def sync_source(
                 and _refresh_due(latest, settings, now)
             ):
                 refresh_budget -= 1
+                # Stamped outside the savepoint: a permanently failing page waits its turn instead of
+                # using the refresh budget of every later law on the listing.
+                latest.evidence = {**(latest.evidence or {}), "last_refreshed_at": now.isoformat()}
                 try:
                     with session.begin_nested():
                         _refresh_known_document(

@@ -53,6 +53,7 @@ from legal_core.models import (
     SyncRun,
     UpdateCandidate,
     WorkerHeartbeat,
+    deferred_backlog,
     utcnow,
 )
 from legal_core.normalize import normalize_ar
@@ -600,12 +601,17 @@ def dashboard(db: Db, settings: SettingsDep) -> dict:
                     select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.discovered_at >= week)
                 ),
                 "new_instruments": changes.get("new_instrument", 0),
-                "amended_instruments": sum(changes.get(k, 0) for k in ("changed", "added", "removed")),
+                "amended_instruments": scalar(
+                    select(func.count(func.distinct(AmendmentRelation.target_instrument_id))).where(
+                        AmendmentRelation.created_at >= week,
+                        AmendmentRelation.change_type.in_(("changed", "added", "removed")),
+                    )
+                ),
                 "repealed_instruments": changes.get("repealed", 0),
                 "watched_pages_changed": scalar(
                     select(func.count())
                     .select_from(SourceSyncLog)
-                    .where(SourceSyncLog.started_at >= week, SourceSyncLog.status == "changed")
+                    .where(SourceSyncLog.started_at >= week, SourceSyncLog.counts["page_changed"].as_integer() > 0)
                 ),
             },
             "verification_queue": {
@@ -620,12 +626,7 @@ def dashboard(db: Db, settings: SettingsDep) -> dict:
                 "deferred_backlog": scalar(
                     select(func.count())
                     .select_from(UpdateCandidate)
-                    .where(
-                        UpdateCandidate.state == "candidate",
-                        UpdateCandidate.document_ref.is_not(None),
-                        UpdateCandidate.proposed_version_id.is_(None),
-                        UpdateCandidate.classification.not_in(("irrelevant", "draft", "notice")),
-                    )
+                    .where(deferred_backlog())
                 ),
                 "failed_fetches": scalar(
                     select(func.count()).select_from(UpdateCandidate).where(UpdateCandidate.state == "failed")

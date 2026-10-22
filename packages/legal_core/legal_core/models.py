@@ -64,6 +64,8 @@ CLASSIFICATIONS = (
 )
 # Classifications that change binding law and may be published by the release gate.
 PUBLISHABLE_CLASSIFICATIONS = ("new_law", "amendment", "repeal", "regulation")
+# Classifications that can never become binding text, so their documents are never fetched.
+NOT_FETCHED_CLASSIFICATIONS = ("irrelevant", "draft", "notice")
 CRAWL_POLICIES = ("feed_only", "fetch_allowed", "fixture", "manual")
 JOB_TYPES = ("document_ingest", "feed_sync", "reindex", "nightly_sync", "source_probe")
 SYNC_TRIGGERS = ("scheduled", "catch_up", "manual")
@@ -294,6 +296,19 @@ class SourceRegistry(Base):
     access_notes: Mapped[str | None] = mapped_column(Text)
     # Reuse terms of official publications have not been reviewed by counsel for this deployment.
     licensing_status: Mapped[str] = mapped_column(String(40), default="public_terms_unreviewed")
+
+
+def deferred_backlog():
+    """Discovered documents whose fetch a connector deferred (politeness budget): not yet fetched,
+    not yet judged by the release gate."""
+    from sqlalchemy import and_
+
+    return and_(
+        UpdateCandidate.state == "candidate",
+        UpdateCandidate.document_ref.is_not(None),
+        UpdateCandidate.proposed_version_id.is_(None),
+        UpdateCandidate.classification.not_in(NOT_FETCHED_CLASSIFICATIONS),
+    )
 
 
 class UpdateCandidate(Base):

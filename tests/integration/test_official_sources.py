@@ -356,3 +356,17 @@ def test_weak_page_headings_never_merge_different_documents(registry, settings):
     assert ids[0] != ids[1]
     titles = sorted(db.scalars(select(LegalInstrument.official_title_ar)))
     assert titles == ["دليل تراخيص الاستيراد", "دليل نقل الثروة الحيوانية"]
+
+
+def test_bureau_status_never_overrides_conflicting_dates_in_the_text(registry, settings):
+    db = registry
+    boe = source(db, "boe")
+    page = boe_page("ساري").replace(
+        "تحفظ الوثائق الرسمية لدى المركز وفق أحكام هذا النظام.".encode(),
+        "يعمل بهذا النظام اعتباراً من 2026-01-01. ويعمل بهذا النظام اعتباراً من 2026-03-01.".encode(),
+    )
+    pages = {boe.feed_url: listing((LAW_A, "نظام المحفوظات التجريبي")), LAW_A: page}
+    sync_source(db, boe, settings, fetcher=pages.__getitem__)
+    candidate = db.scalars(select(UpdateCandidate)).one()
+    decision = evaluate(db, candidate, RuleClassifier().propose(db, candidate, ""), settings)
+    assert decision.outcome == "quarantine" and decision.reason_code == "CONFLICTING_EFFECTIVE_DATES"

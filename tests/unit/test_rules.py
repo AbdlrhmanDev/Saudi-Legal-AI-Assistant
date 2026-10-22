@@ -325,3 +325,13 @@ def test_production_refuses_weak_secrets():
 def test_provider_database_urls_use_psycopg_v3(scheme):
     settings = Settings(database_url=f"{scheme}user:pass@db.internal:5432/app")
     assert settings.database_url == "postgresql+psycopg://user:pass@db.internal:5432/app"
+
+
+def test_practical_steps_may_only_rest_on_evidence_the_answer_cites():
+    from legal_core.answer import _validate
+
+    evidence = EVIDENCE + [Evidence("E2", "نظام", "المادة السادسة", "6", "نص آخر", date(2024, 1, 1), None)]
+    uncited = Draft("لا تزيد على تسعين يوماً.", "grounded", ["E1"], steps=[{"text": "راجع العقد", "citations": ["E2"]}])
+    assert "answer itself cites" in _validate(uncited, evidence)
+    cited = Draft("لا تزيد على تسعين يوماً.", "grounded", ["E1"], steps=[{"text": "راجع العقد", "citations": ["E1"]}])
+    assert _validate(cited, evidence) is None
